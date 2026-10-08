@@ -1,0 +1,687 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SVG to STL</title>
+<meta name="description" content="Turn an SVG into one STL per color for multi-color 3D printing. Free, runs in your browser, your file is never uploaded.">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><rect x='1' y='9' width='14' height='5' fill='%23888'/><rect x='3' y='4' width='4' height='5' fill='%23e5484d'/><rect x='9' y='2' width='4' height='7' fill='%233e7bfa'/></svg>">
+<script type="importmap">{ "imports": { "three": "./vendor/three.module.min.js" } }</script>
+<style>
+  :root {
+    --bg: #f4f4f5; --panel: #ffffff; --panel-2: #f8f8f9; --border: #e2e2e6;
+    --text: #1d1d22; --muted: #6b6b76; --accent: #3e63dd; --accent-text: #fff;
+    --danger: #d93036; --ok: #1f8a4c; --viewport: #e9e9ee; --grid: #c9c9d2;
+    --focus: color-mix(in srgb, var(--accent) 35%, transparent);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #111114; --panel: #1a1a1f; --panel-2: #212127; --border: #2e2e36;
+      --text: #ececf1; --muted: #9b9ba7; --accent: #6e8cff; --accent-text: #0b0b10;
+      --danger: #ff6369; --ok: #4cc38a; --viewport: #16161b; --grid: #34343e;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #111114; --panel: #1a1a1f; --panel-2: #212127; --border: #2e2e36;
+    --text: #ececf1; --muted: #9b9ba7; --accent: #6e8cff; --accent-text: #0b0b10;
+    --danger: #ff6369; --ok: #4cc38a; --viewport: #16161b; --grid: #34343e;
+  }
+  :root { color-scheme: light dark; }
+  :root[data-theme="light"] { color-scheme: light; }
+  :root[data-theme="dark"] { color-scheme: dark; }
+  [hidden] { display: none !important; }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: var(--bg); color: var(--text);
+    font: 13px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif;
+    display: grid; grid-template-columns: 360px 1fr; overflow: hidden;
+  }
+  aside {
+    background: var(--panel); border-right: 1px solid var(--border);
+    display: flex; flex-direction: column; min-height: 0;
+  }
+  header { padding: 14px 16px 10px; border-bottom: 1px solid var(--border); }
+  header h1 { font-size: 15px; margin: 0; letter-spacing: .2px; }
+  header p { margin: 2px 0 0; color: var(--muted); font-size: 12px; }
+  .scroll { overflow-y: auto; flex: 1; padding: 4px 0 12px; }
+  section { padding: 12px 16px; border-bottom: 1px solid var(--border); }
+  section:last-child { border-bottom: 0; }
+  h2 {
+    font-size: 11px; text-transform: uppercase; letter-spacing: .8px;
+    color: var(--muted); margin: 0 0 10px; font-weight: 600;
+    display: flex; justify-content: space-between; align-items: center;
+  }
+  label { color: var(--muted); }
+  input, button { font: inherit; color: inherit; }
+  input[type=text], input[type=number] {
+    background: var(--panel-2); border: 1px solid var(--border); border-radius: 6px;
+    padding: 5px 7px; width: 100%; min-width: 0;
+  }
+  input:focus-visible, button:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
+  input[type=number] { text-align: right; font-variant-numeric: tabular-nums; }
+  input[type=range] { width: 100%; accent-color: var(--accent); }
+  input[type=checkbox] { accent-color: var(--accent); }
+  button {
+    background: var(--panel-2); border: 1px solid var(--border); border-radius: 6px;
+    padding: 5px 10px; cursor: pointer; white-space: nowrap;
+  }
+  button:hover:not(:disabled) { border-color: var(--muted); }
+  button:disabled { opacity: .5; cursor: default; }
+  button.primary {
+    background: var(--accent); border-color: var(--accent); color: var(--accent-text);
+    font-weight: 600; padding: 9px 12px; width: 100%;
+  }
+  .row { display: flex; gap: 6px; align-items: center; }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 10px; }
+  .field { display: flex; flex-direction: column; gap: 3px; }
+  .unit { position: relative; }
+  .unit input { padding-right: 30px; }
+  .unit::after {
+    content: attr(data-unit); position: absolute; right: 8px; top: 50%;
+    transform: translateY(-50%); color: var(--muted); font-size: 11px; pointer-events: none;
+  }
+  .check { display: flex; gap: 7px; align-items: center; color: var(--text); cursor: pointer; }
+  .hint { color: var(--muted); font-size: 12px; margin: 6px 0 0; word-break: break-all; }
+  .thumb {
+    margin-top: 10px; background: repeating-conic-gradient(var(--panel-2) 0 25%, var(--panel) 0 50%) 0 0/14px 14px;
+    border: 1px solid var(--border); border-radius: 6px; height: 120px;
+    display: flex; align-items: center; justify-content: center; overflow: hidden;
+  }
+  .thumb img { width: 100%; height: 100%; object-fit: contain; padding: 6px; }
+  .thumb span { color: var(--muted); }
+
+  .color {
+    display: grid; grid-template-columns: 18px 22px 1fr 74px; gap: 4px 8px; align-items: center;
+    padding: 8px; margin: 0 -8px; border-radius: 8px;
+  }
+  .color:hover { background: var(--panel-2); }
+  .color .sw { width: 22px; height: 22px; border-radius: 5px; border: 1px solid var(--border); }
+  .color .name { font-family: ui-monospace, Consolas, monospace; font-size: 12px; }
+  .color .meta { color: var(--muted); font-size: 11px; }
+  .color input[type=range] { grid-column: 3 / 5; margin: 0; }
+  .color.off .sw, .color.off .name { opacity: .4; }
+  .color.zero .name::after { content: " · skipped"; color: var(--muted); }
+
+  .drop {
+    display: flex; align-items: center; justify-content: center; text-align: center;
+    border: 1.5px dashed var(--border); border-radius: 8px; padding: 16px 10px;
+    cursor: pointer; color: var(--muted); background: var(--panel-2); word-break: break-all;
+  }
+  .drop:hover, .drop.over { border-color: var(--accent); color: var(--text); }
+  .drop b { color: var(--accent); }
+  .warn { color: var(--danger); font-size: 12px; margin: 6px 0 0; padding-left: 16px; }
+  .kofi {
+    display: inline-flex; align-items: center; gap: 6px; text-decoration: none;
+    background: #ff5e5b; color: #fff; border-radius: 6px; padding: 5px 10px;
+    font-weight: 600; font-size: 12px; white-space: nowrap;
+  }
+  .kofi:hover { filter: brightness(1.08); }
+  header { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+  .thanks {
+    margin-top: 10px; padding: 10px; border-radius: 8px; background: var(--panel-2);
+    border: 1px solid var(--border); display: flex; gap: 10px; align-items: center;
+    justify-content: space-between;
+  }
+  .thanks[hidden] { display: none; }
+  details summary { cursor: pointer; color: var(--muted); font-size: 11px; text-transform: uppercase;
+    letter-spacing: .8px; font-weight: 600; }
+  details ul { margin: 8px 0 0; padding-left: 18px; color: var(--muted); font-size: 12px; }
+  details li { margin: 3px 0; }
+  footer { padding: 10px 16px; border-top: 1px solid var(--border); color: var(--muted); font-size: 11px; }
+  #status { min-height: 18px; font-size: 12px; margin-top: 8px; color: var(--muted); }
+  #status.err { color: var(--danger); }
+  #status.ok { color: var(--ok); }
+  #files { margin: 6px 0 0; padding: 0; list-style: none; font-size: 12px; font-family: ui-monospace, Consolas, monospace; }
+  #files li { padding: 1px 0; color: var(--muted); }
+
+  main { position: relative; background: var(--viewport); min-width: 0; min-height: 0; }
+  #view { position: absolute; inset: 0; display: block; width: 100%; height: 100%; }
+  .toolbar {
+    position: absolute; top: 12px; left: 12px; display: flex; gap: 6px; flex-wrap: wrap;
+  }
+  .toolbar button { background: var(--panel); }
+  .stats {
+    position: absolute; bottom: 12px; left: 12px; background: var(--panel);
+    border: 1px solid var(--border); border-radius: 8px; padding: 6px 10px;
+    font-variant-numeric: tabular-nums; font-size: 12px; color: var(--muted);
+  }
+  .stats b { color: var(--text); font-weight: 600; }
+  .busy {
+    position: absolute; top: 12px; right: 12px; background: var(--panel);
+    border: 1px solid var(--border); border-radius: 8px; padding: 6px 10px; display: none;
+  }
+  .busy.on { display: block; }
+  .empty {
+    position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+    color: var(--muted); pointer-events: none; text-align: center; padding: 24px;
+  }
+
+  @media (max-width: 760px) {
+    body { grid-template-columns: 1fr; grid-template-rows: 45vh 1fr; overflow: auto; height: auto; }
+    main { grid-row: 1; min-height: 45vh; }
+    aside { grid-row: 2; border-right: 0; }
+    section { padding: 12px 16px; }
+  }
+</style>
+</head>
+<body>
+<aside>
+  <header>
+    <div>
+      <h1>SVG to STL</h1>
+      <p>Multi-color extrusion for 3D printing</p>
+    </div>
+    <a class="kofi" data-kofi target="_blank" rel="noopener" hidden>☕ Support</a>
+  </header>
+  <div class="scroll">
+    <section>
+      <h2>Source</h2>
+      <label class="drop" id="drop">
+        <input id="file" type="file" accept=".svg,image/svg+xml" hidden>
+        <span id="dropText"><b>Choose an SVG</b> or drop it here</span>
+      </label>
+      <div class="thumb" id="thumb" hidden></div>
+      <ul class="warn" id="warnings" hidden></ul>
+      <p class="hint" style="word-break:normal">Your file is processed on your own computer and never uploaded.</p>
+    </section>
+
+    <section>
+      <h2>Size &amp; geometry</h2>
+      <div class="grid2">
+        <div class="field"><label for="width">Width</label>
+          <div class="unit" data-unit="mm"><input id="width" type="number" min="0" step="1" placeholder="auto"></div></div>
+        <div class="field"><label for="scale">Scale</label>
+          <div class="unit" data-unit="×"><input id="scale" type="number" min="0.001" step="0.1" value="1"></div></div>
+        <div class="field"><label for="tolerance">Curve detail</label>
+          <div class="unit" data-unit="mm"><input id="tolerance" type="number" min="0.005" step="0.01" value="0.05"></div></div>
+        <div class="field" style="justify-content:flex-end">
+          <label class="check" title="Cut away parts of shapes covered by shapes drawn on top of them, so parts never overlap">
+            <input id="occlude" type="checkbox" checked> Cut hidden parts</label></div>
+      </div>
+      <p class="hint" style="word-break:normal">Width overrides scale. Changing these recomputes the outlines.</p>
+    </section>
+
+    <section>
+      <h2>Colors <span class="row" style="gap:4px">
+        <input id="allDepth" type="number" min="0" step="0.1" value="1" style="width:62px" title="Depth for all colors">
+        <button id="applyAll" title="Set this depth for every color">Set all</button></span></h2>
+      <div id="colors"><p class="hint">Load an SVG to see its fill colors.</p></div>
+    </section>
+
+    <section>
+      <h2>Backplate</h2>
+      <label class="check"><input id="bpOn" type="checkbox"> Create backplate (union of all shapes)</label>
+      <div class="grid2" style="margin-top:8px">
+        <div class="field"><label for="bpDepth">Thickness</label>
+          <div class="unit" data-unit="mm"><input id="bpDepth" type="number" min="0.1" step="0.1" value="1.5"></div></div>
+        <div class="field"><label for="bpMargin">Margin</label>
+          <div class="unit" data-unit="mm"><input id="bpMargin" type="number" min="0" step="0.5" value="0"></div></div>
+      </div>
+    </section>
+
+    <section>
+      <h2>Preview</h2>
+      <div class="field"><label for="explode">Separate parts <span id="explodeVal"></span></label>
+        <input id="explode" type="range" min="0" max="10" step="0.1" value="0"></div>
+      <label class="check" style="margin-top:8px"><input id="edges" type="checkbox" checked> Show edges</label>
+    </section>
+
+    <section>
+      <button class="primary" id="export" disabled>Download STL files</button>
+      <div id="status"></div>
+      <ul id="files"></ul>
+      <div class="thanks" id="thanks" hidden>
+        <span>Saved you some time?</span>
+        <a class="kofi" data-kofi target="_blank" rel="noopener">☕ Buy me a coffee</a>
+      </div>
+    </section>
+
+    <section>
+      <details>
+        <summary>Tips</summary>
+        <ul>
+          <li>Each fill color becomes one STL. Import them all into your slicer at once, as one multi-part object, and give each part a filament.</li>
+          <li>Only fills are used. Convert strokes first (Inkscape: <i>Path › Stroke to Path</i>).</li>
+          <li>Convert text to paths (Inkscape: <i>Path › Object to Path</i>).</li>
+          <li>Clipping paths and masks are not applied; release or apply them in your editor first.</li>
+          <li>Gradients use the color of their first stop.</li>
+          <li>Size comes from the SVG's physical size (mm, cm, in; px at 96 dpi), or set a width.</li>
+        </ul>
+      </details>
+    </section>
+  </div>
+  <footer>Free to use. Runs entirely in your browser.</footer>
+</aside>
+
+<main>
+  <canvas id="view"></canvas>
+  <div class="empty" id="empty">Drop an SVG here, or choose one on the left</div>
+  <div class="toolbar">
+    <button data-view="iso">3D</button>
+    <button data-view="top">Top</button>
+    <button data-view="front">Front</button>
+    <button data-view="bottom">Bottom</button>
+  </div>
+  <div class="busy" id="busy">Computing…</div>
+  <div class="stats" id="stats" hidden></div>
+</main>
+
+<script type="module">
+import * as THREE from "three";
+import { OrbitControls } from "./vendor/OrbitControls.js";
+
+// Your Ko-fi page, e.g. "https://ko-fi.com/yourname". Leave empty to hide the buttons.
+const KOFI_URL = "";
+
+const $ = (id) => document.getElementById(id);
+document.querySelectorAll("[data-kofi]").forEach((a) => {
+  if (!KOFI_URL) return a.remove();
+  a.href = KOFI_URL;
+  a.hidden = false;
+});
+const state = {
+  data: null,            // last load result
+  file: null,            // {name, size, text} of the chosen SVG
+  depths: {},            // hex -> mm
+  visible: {},           // hex -> bool
+  meshes: {},            // hex -> THREE.Group (mesh + edges), also "backplate"
+};
+
+// ---------------------------------------------------------------- settings
+const STORE_KEY = "svg2stl:";
+function saveSettings() {
+  if (!state.data) return;
+  try {
+    localStorage.setItem(STORE_KEY + fileKey(), JSON.stringify({
+      depths: state.depths, width: $("width").value, scale: $("scale").value,
+      tolerance: $("tolerance").value, occlude: $("occlude").checked,
+      bpOn: $("bpOn").checked, bpDepth: $("bpDepth").value, bpMargin: $("bpMargin").value,
+    }));
+  } catch {}
+}
+const fileKey = () => state.file ? `${state.file.name}:${state.file.size}` : "";
+function loadSettings(path) {
+  try { return JSON.parse(localStorage.getItem(STORE_KEY + path)) || null; } catch { return null; }
+}
+
+// ---------------------------------------------------------------- three.js
+const canvas = $("view");
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
+renderer.setPixelRatio(window.devicePixelRatio);
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(35, 1, 0.1, 100000);
+camera.up.set(0, 0, 1);
+const controls = new OrbitControls(camera, canvas);
+controls.enableDamping = true;
+
+scene.add(new THREE.HemisphereLight(0xffffff, 0x666670, 1.6));
+const sun = new THREE.DirectionalLight(0xffffff, 1.6);
+sun.position.set(1, -1.5, 2.5);
+scene.add(sun);
+const fill = new THREE.DirectionalLight(0xffffff, 0.5);
+fill.position.set(-2, 1, -1);
+scene.add(fill);
+
+const model = new THREE.Group();
+scene.add(model);
+let grid = null;
+
+function cssVar(name) { return getComputedStyle(document.documentElement).getPropertyValue(name).trim(); }
+
+function resize() {
+  const { clientWidth: w, clientHeight: h } = canvas.parentElement;
+  renderer.setSize(w, h, false);
+  camera.aspect = w / Math.max(h, 1);
+  camera.updateProjectionMatrix();
+}
+new ResizeObserver(resize).observe(canvas.parentElement);
+
+renderer.setAnimationLoop(() => { controls.update(); renderer.render(scene, camera); });
+
+function toShapes(polygons) {
+  return polygons.map(({ outer, holes }) => {
+    const s = new THREE.Shape(outer.map(([x, y]) => new THREE.Vector2(x, y)));
+    s.holes = holes.map((h) => new THREE.Path(h.map(([x, y]) => new THREE.Vector2(x, y))));
+    return s;
+  });
+}
+
+// Extrude once at 1 mm; depth changes only scale Z, so sliders are instant.
+function makePart(polygons, hex) {
+  const geom = new THREE.ExtrudeGeometry(toShapes(polygons), { depth: 1, bevelEnabled: false, curveSegments: 1 });
+  const color = new THREE.Color("#" + hex);
+  const mat = new THREE.MeshStandardMaterial({
+    color, roughness: 0.65, metalness: 0.0, polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1,
+  });
+  const mesh = new THREE.Mesh(geom, mat);
+  const hsl = {}; color.getHSL(hsl);
+  const edgeColor = hsl.l > 0.5 ? color.clone().multiplyScalar(0.55) : color.clone().lerp(new THREE.Color(0xffffff), 0.45);
+  const edges = new THREE.LineSegments(new THREE.EdgesGeometry(geom, 25),
+                                       new THREE.LineBasicMaterial({ color: edgeColor }));
+  const g = new THREE.Group();
+  g.add(mesh, edges);
+  g.userData = { mesh, edges };
+  return g;
+}
+
+function disposeModel() {
+  for (const g of Object.values(state.meshes)) {
+    g.traverse((o) => { o.geometry?.dispose(); o.material?.dispose(); });
+    model.remove(g);
+  }
+  state.meshes = {};
+}
+
+function buildModel() {
+  disposeModel();
+  const d = state.data;
+  if (!d) return;
+  // A part that fails to triangulate must not take the rest of the preview down.
+  const failed = [];
+  const add = (key, polygons, hex, label) => {
+    try { state.meshes[key] = makePart(polygons, hex); model.add(state.meshes[key]); }
+    catch (e) { console.error(label, e); failed.push(label); }
+  };
+  d.colors.forEach((c) => add(c.hex, c.polygons, c.hex, "#" + c.hex));
+  add("backplate", d.backplate, "9a9aa6", "backplate");
+  if (failed.length) status(`Preview incomplete, could not mesh: ${failed.join(", ")} (export is unaffected)`, "err");
+
+  if (grid) { scene.remove(grid); grid.geometry.dispose(); grid.material.dispose(); }
+  const [w, h] = d.size;
+  const span = Math.max(w, h) * 1.6;
+  const step = span > 400 ? 50 : span > 100 ? 10 : 5;
+  const n = Math.ceil(span / step);
+  grid = new THREE.GridHelper(n * step, n, cssVar("--grid"), cssVar("--grid"));
+  grid.rotation.x = Math.PI / 2;
+  grid.position.set(w / 2, h / 2, -0.01);
+  grid.material.transparent = true; grid.material.opacity = 0.7; grid.material.depthWrite = false;
+  scene.add(grid);
+  applyPreview();
+}
+
+function applyPreview() {
+  const d = state.data;
+  if (!d) return;
+  const gap = +$("explode").value;
+  $("explodeVal").textContent = gap ? `(${gap} mm)` : "";
+  const showEdges = $("edges").checked;
+  let top = 0;
+  d.colors.forEach((c, i) => {
+    const g = state.meshes[c.hex];
+    if (!g) return;
+    const depth = state.depths[c.hex] ?? 0;
+    g.visible = state.visible[c.hex] !== false && depth > 0;
+    g.scale.z = Math.max(depth, 1e-4);
+    g.position.z = gap * (i + 1);
+    g.userData.edges.visible = showEdges;
+    if (g.visible) top = Math.max(top, depth + g.position.z);
+  });
+  const bp = state.meshes.backplate;
+  const bpOn = $("bpOn").checked;
+  const bpDepth = Math.max(+$("bpDepth").value || 0, 0);
+  const bpShown = !!bp && bpOn && bpDepth > 0;
+  if (bp) {
+    bp.visible = bpShown;
+    bp.scale.z = Math.max(bpDepth, 1e-4);
+    bp.position.z = -bpDepth;
+    bp.userData.edges.visible = showEdges;
+  }
+  if (grid) grid.position.z = (bpShown ? -bpDepth : 0) - 0.01;
+
+  const maxColor = Math.max(0, ...d.colors.filter((c) => state.visible[c.hex] !== false)
+                                         .map((c) => state.depths[c.hex] || 0));
+  const total = maxColor + (bpShown ? bpDepth : 0);
+  let [w, h] = d.size;
+  if (bpShown) {
+    const box = new THREE.Box3().setFromObject(bp.userData.mesh);
+    w = Math.max(w, box.max.x) - Math.min(0, box.min.x);
+    h = Math.max(h, box.max.y) - Math.min(0, box.min.y);
+  }
+  const s = $("stats");
+  s.hidden = false;
+  s.innerHTML = `<b>${fmt(w)}</b> × <b>${fmt(h)}</b> × <b>${fmt(total)}</b> mm`;
+  updateExportLabel();
+}
+
+const fmt = (v) => (Math.round(v * 100) / 100).toString();
+
+function setView(kind, keepTarget = false) {
+  const d = state.data;
+  if (!d) return;
+  const [w, h] = d.size;
+  const center = new THREE.Vector3(w / 2, h / 2, 0);
+  const r = Math.max(w, h, 10);
+  const dist = r / (2 * Math.tan(THREE.MathUtils.degToRad(camera.fov / 2))) * 1.25;
+  const dirs = {
+    iso: new THREE.Vector3(0.55, -0.85, 0.9),
+    top: new THREE.Vector3(0, -0.0001, 1),
+    front: new THREE.Vector3(0, -1, 0.0001),
+    bottom: new THREE.Vector3(0, -0.0001, -1),
+  };
+  camera.position.copy(center).addScaledVector(dirs[kind].normalize(), dist);
+  camera.near = dist / 1000; camera.far = dist * 100;
+  camera.updateProjectionMatrix();
+  controls.target.copy(center);
+  controls.update();
+}
+document.querySelectorAll("[data-view]").forEach((b) => b.addEventListener("click", () => setView(b.dataset.view)));
+
+// ---------------------------------------------------------------- UI
+function renderColors() {
+  const box = $("colors");
+  box.innerHTML = "";
+  for (const c of state.data.colors) {
+    const row = document.createElement("div");
+    row.className = "color";
+    row.innerHTML = `
+      <input type="checkbox" title="Show in preview" ${state.visible[c.hex] !== false ? "checked" : ""}>
+      <div class="sw" style="background:#${c.hex}"></div>
+      <div><div class="name">#${c.hex}</div>
+        <div class="meta">${c.regions} region${c.regions === 1 ? "" : "s"} · ${fmt(c.area)} mm²</div></div>
+      <div class="unit" data-unit="mm"><input type="number" min="0" step="0.1" value="${state.depths[c.hex]}"></div>
+      <input type="range" min="0" max="10" step="0.1" value="${Math.min(state.depths[c.hex], 10)}">`;
+    const [vis, num, range] = row.querySelectorAll("input");
+    const set = (v, from) => {
+      v = Math.max(0, +v || 0);
+      state.depths[c.hex] = v;
+      if (from !== num) num.value = v;
+      if (from !== range) range.value = Math.min(v, 10);
+      row.classList.toggle("zero", v === 0);
+      applyPreview(); saveSettings();
+    };
+    num.addEventListener("input", () => set(num.value, num));
+    range.addEventListener("input", () => set(range.value, range));
+    vis.addEventListener("change", () => {
+      state.visible[c.hex] = vis.checked;
+      row.classList.toggle("off", !vis.checked);
+      applyPreview();
+    });
+    row.addEventListener("mouseenter", () => highlight(c.hex, true));
+    row.addEventListener("mouseleave", () => highlight(c.hex, false));
+    row.classList.toggle("zero", state.depths[c.hex] === 0);
+    row.classList.toggle("off", state.visible[c.hex] === false);
+    box.appendChild(row);
+  }
+}
+
+function highlight(hex, on) {
+  const g = state.meshes[hex];
+  if (!g) return;
+  g.userData.mesh.material.emissive.set(on ? 0x3355ff : 0x000000);
+  g.userData.mesh.material.emissiveIntensity = on ? 0.35 : 0;
+}
+
+function updateExportLabel() {
+  const d = state.data;
+  const btn = $("export");
+  if (!d) { btn.disabled = true; btn.textContent = "Download STL files"; return; }
+  const n = d.colors.filter((c) => (state.depths[c.hex] || 0) > 0).length
+          + ($("bpOn").checked && +$("bpDepth").value > 0 ? 1 : 0);
+  btn.disabled = n === 0;
+  btn.textContent = `Download ${n} STL file${n === 1 ? "" : "s"} (.zip)`;
+}
+
+function status(msg, kind = "") {
+  const s = $("status");
+  s.textContent = msg;
+  s.className = kind;
+}
+
+// ---------------------------------------------------------------- converter
+// svg2stl runs in a Web Worker (Python via Pyodide), see worker.js.
+const worker = new Worker("worker.js", { type: "module" });
+const pending = new Map();
+let reqId = 0, engineReady = false;
+const busy = (msg) => { $("busy").textContent = msg; $("busy").classList.add("on"); };
+const idle = () => $("busy").classList.remove("on");
+const esc = (t) => String(t).replace(/[&<>"]/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[ch]);
+
+worker.onmessage = ({ data }) => {
+  if (data.type === "progress") { if (!engineReady) busy(data.msg); return; }
+  if (data.type === "ready") { engineReady = true; if (!pending.size) idle(); return; }
+  if (data.type === "fatal") {
+    idle();
+    status(`The converter could not start (${data.msg}). Check your connection and reload the page.`, "err");
+    for (const p of pending.values()) p.reject(new Error(data.msg));
+    pending.clear();
+    return;
+  }
+  const p = pending.get(data.id);
+  if (!p) return;
+  pending.delete(data.id);
+  data.error ? p.reject(new Error(data.error)) : p.resolve(data);
+};
+worker.onerror = (e) => { idle(); status(`Converter error: ${e.message}`, "err"); };
+
+function call(cmd, payload) {
+  return new Promise((resolve, reject) => {
+    const id = ++reqId;
+    pending.set(id, { resolve, reject });
+    worker.postMessage({ id, cmd, ...payload });
+  });
+}
+
+function geometryRequest() {
+  return {
+    width: +$("width").value || 0,
+    scale: +$("scale").value || 1,
+    tolerance: +$("tolerance").value || 0.05,
+    occlude: $("occlude").checked,
+    margin: +$("bpMargin").value || 0,
+  };
+}
+
+let loadSeq = 0;
+async function load({ newFile = false } = {}) {
+  if (!state.file) return;
+  const seq = ++loadSeq;
+  if (engineReady) busy("Computing…");
+  status("");
+  try {
+    const msg = { req: geometryRequest() };
+    if (newFile) { msg.svg = state.file.text; msg.name = state.file.name; }
+    const res = await call("load", msg);
+    if (res.skipped || seq !== loadSeq) return;   // superseded by a newer request
+    const data = res.result;
+    state.data = data;
+    const def = +$("allDepth").value || 1;
+    for (const c of data.colors) if (state.depths[c.hex] == null) state.depths[c.hex] = def;
+    $("empty").style.display = "none";
+    const uniq = [...new Set(data.warnings)];
+    $("warnings").innerHTML = uniq.map((m) => `<li>${esc(m)}</li>`).join("");
+    $("warnings").hidden = !uniq.length;
+    renderColors();
+    buildModel();
+    if (newFile) setView("iso");
+    saveSettings();
+  } catch (e) {
+    if (seq === loadSeq) status(e.message, "err");
+  } finally {
+    if (seq === loadSeq && engineReady) idle();
+  }
+}
+
+let timer = null;
+const reloadSoon = () => { clearTimeout(timer); timer = setTimeout(() => load(), 350); };
+
+async function openFile(file) {
+  if (!file) return;
+  if (!/\.svg$/i.test(file.name) && file.type !== "image/svg+xml") {
+    status("Please choose an .svg file", "err");
+    return;
+  }
+  const text = await file.text();
+  state.file = { name: file.name, size: file.size, text };
+  state.data = null; state.depths = {}; state.visible = {};
+  const s = loadSettings(fileKey());
+  if (s) {
+    for (const k of ["width", "scale", "tolerance", "bpDepth", "bpMargin"]) if (s[k] != null) $(k).value = s[k];
+    $("occlude").checked = s.occlude ?? true;
+    $("bpOn").checked = !!s.bpOn;
+    state.depths = { ...s.depths };
+  }
+  $("dropText").innerHTML = `<b>${esc(file.name)}</b><br>choose another`;
+  const thumb = $("thumb");
+  if (thumb.dataset.url) URL.revokeObjectURL(thumb.dataset.url);
+  thumb.dataset.url = URL.createObjectURL(new Blob([text], { type: "image/svg+xml" }));
+  thumb.innerHTML = `<img alt="SVG preview" src="${thumb.dataset.url}">`;
+  thumb.hidden = false;
+  $("files").innerHTML = ""; $("thanks").hidden = true;
+  await load({ newFile: true });
+}
+
+$("file").addEventListener("change", (e) => { openFile(e.target.files[0]); e.target.value = ""; });
+// Drag and drop anywhere on the page.
+const drop = $("drop");
+let dragDepth = 0;
+window.addEventListener("dragenter", (e) => { e.preventDefault(); dragDepth++; drop.classList.add("over"); });
+window.addEventListener("dragleave", () => { if (--dragDepth <= 0) { dragDepth = 0; drop.classList.remove("over"); } });
+window.addEventListener("dragover", (e) => e.preventDefault());
+window.addEventListener("drop", (e) => {
+  e.preventDefault(); dragDepth = 0; drop.classList.remove("over");
+  openFile(e.dataTransfer.files[0]);
+});
+
+for (const id of ["width", "scale", "tolerance", "bpMargin"]) $(id).addEventListener("input", reloadSoon);
+$("occlude").addEventListener("change", reloadSoon);
+for (const id of ["bpOn", "bpDepth", "explode", "edges"])
+  $(id).addEventListener("input", () => { applyPreview(); saveSettings(); });
+$("applyAll").addEventListener("click", () => {
+  if (!state.data) return;
+  const v = Math.max(0, +$("allDepth").value || 0);
+  for (const c of state.data.colors) state.depths[c.hex] = v;
+  renderColors(); applyPreview(); saveSettings();
+});
+
+$("export").addEventListener("click", async () => {
+  const btn = $("export");
+  btn.disabled = true;
+  status("Building STL files…");
+  try {
+    const { result, zip } = await call("export", { req: {
+      ...geometryRequest(),
+      depths: state.depths,
+      backplate: $("bpOn").checked ? +$("bpDepth").value || 0 : 0,
+    } });
+    const url = URL.createObjectURL(new Blob([zip], { type: "application/zip" }));
+    const a = Object.assign(document.createElement("a"), { href: url, download: result.zipName });
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
+    const n = result.files.length;
+    status(`Downloaded ${result.zipName} (${n} STL file${n === 1 ? "" : "s"})`, "ok");
+    $("files").innerHTML = result.files.map((f) => `<li>${esc(f.name)}</li>`).join("");
+    $("thanks").hidden = !KOFI_URL;
+  } catch (e) {
+    status(e.message, "err");
+  } finally {
+    updateExportLabel();
+  }
+});
+
+// ---------------------------------------------------------------- start
+resize();
+busy("Starting the converter…");
+</script>
+</body>
+</html>

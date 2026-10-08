@@ -53,26 +53,6 @@ def geometry_params(req):
     return path, groups, everything
 
 
-def polygons_json(multipolygon):
-    def ring(r):
-        # Rounding can merge neighbouring points; drop the repeats so the
-        # browser's triangulator never sees a ring that collapsed to a point.
-        pts = []
-        for x, y in list(r.coords)[:-1]:
-            p = [round(x, 4), round(y, 4)]
-            if not pts or p != pts[-1]:
-                pts.append(p)
-        if len(pts) > 1 and pts[0] == pts[-1]:
-            pts.pop()
-        return pts if len({tuple(p) for p in pts}) >= 3 else None
-    out = []
-    for p in multipolygon.geoms:
-        outer = ring(p.exterior)
-        if outer:
-            out.append({"outer": outer, "holes": [h for h in map(ring, p.interiors) if h]})
-    return out
-
-
 def pick_file(initial):
     """Native file dialog, run in a subprocess so Tk owns its own main thread."""
     code = (
@@ -161,8 +141,8 @@ class Handler(BaseHTTPRequestHandler):
             "outDir": str(svg2stl.output_dir(path)),
             "size": [w, h],
             "colors": [{"hex": c, "area": g.area, "regions": len(g.geoms),
-                        "polygons": polygons_json(g)} for c, g in groups.items()],
-            "backplate": polygons_json(svg2stl.backplate_outline(everything, margin)),
+                        "polygons": svg2stl.polygons_json(g)} for c, g in groups.items()],
+            "backplate": svg2stl.polygons_json(svg2stl.backplate_outline(everything, margin)),
         }
 
     def export(self, req):

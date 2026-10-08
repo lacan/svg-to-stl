@@ -22,7 +22,6 @@ from pathlib import Path as FsPath
 
 import numpy as np
 import shapely
-import trimesh
 from shapely.geometry import LineString, MultiPolygon, Polygon
 from shapely.ops import polygonize, unary_union
 from svgelements import (SVG, Arc, Close, Color, CubicBezier, Line, Move,
@@ -229,6 +228,7 @@ def group_by_color(shapes, occlude):
 # --------------------------------------------------------------------------
 
 def extrude(geom, height, z0):
+    import trimesh  # only the command line / local UI need it
     parts = []
     # Near-duplicate / collinear points (left by flattening and boolean ops)
     # make the cap triangulation leave holes; a 1 micron simplify removes them.
@@ -240,6 +240,77 @@ def extrude(geom, height, z0):
     if not parts:
         return None
     return trimesh.util.concatenate(parts)
+
+
+def _triangulate(poly):
+    """(n, 3, 2) array of counter-clockwise triangles exactly covering poly."""
+    tris = [np.asarray(t.exterior.coords)[:3]
+            for t in shapely.constrained_delaunay_triangles(poly).geoms]
+    if not tris:
+        return np.empty((0, 3, 2))
+    tris = np.array(tris)
+    a, b, c = tris[:, 0], tris[:, 1], tris[:, 2]
+    cw = (b[:, 0] - a[:, 0]) * (c[:, 1] - a[:, 1]) - (b[:, 1] - a[:, 1]) * (c[:, 0] - a[:, 0]) < 0
+    tris[cw] = tris[cw][:, ::-1]
+    return tris
+
+
+def extrude_triangles(geom, height, z0):
+    """
+    Extrude without trimesh (used by the browser version): (n, 3, 3) array of
+    outward-facing triangles. Caps and walls share their vertices exactly, so
+    the mesh is closed.
+    """
+    out = []
+    z1 = z0 + height
+    for poly in only_polygons(geom.simplify(1e-3)).geoms:
+        poly = shapely.geometry.polygon.orient(poly)  # outer CCW, holes CW
+        caps = _triangulate(poly)
+        n = len(caps)
+        top = np.concatenate([caps, np.full((n, 3, 1), z1)], axis=2)
+        bottom = np.concatenate([caps[:, ::-1], np.full((n, 3, 1), z0)], axis=2)
+        out += [top, bottom]
+        for ring in [poly.exterior, *poly.interiors]:
+            a = np.asarray(ring.coords)[:-1]
+            b = np.roll(a, -1, axis=0)
+            lo = lambda p: np.column_stack([p, np.full(len(p), z0)])
+            hi = lambda p: np.column_stack([p, np.full(len(p), z1)])
+            out.append(np.stack([lo(a), lo(b), hi(b)], axis=1))
+            out.append(np.stack([lo(a), hi(b), hi(a)], axis=1))
+    return np.concatenate(out) if out else np.empty((0, 3, 3))
+
+
+def stl_bytes(triangles):
+    """Binary STL from an (n, 3, 3) triangle array."""
+    tri = np.asarray(triangles, dtype=np.float64)
+    normals = np.cross(tri[:, 1] - tri[:, 0], tri[:, 2] - tri[:, 0])
+    length = np.linalg.norm(normals, axis=1, keepdims=True)
+    normals = np.divide(normals, length, out=np.zeros_like(normals), where=length > 0)
+    rec = np.zeros(len(tri), dtype=[("n", "<f4", 3), ("v", "<f4", (3, 3)), ("attr", "<u2")])
+    rec["n"], rec["v"] = normals, tri
+    header = b"svg2stl".ljust(80, b" ")
+    return header + np.uint32(len(tri)).tobytes() + rec.tobytes()
+
+
+def polygons_json(multipolygon):
+    """Polygons as JSON-ready lists for the 3D preview."""
+    def ring(r):
+        # Rounding can merge neighbouring points; drop the repeats so the
+        # browser's triangulator never sees a ring that collapsed to a point.
+        pts = []
+        for x, y in list(r.coords)[:-1]:
+            p = [round(x, 4), round(y, 4)]
+            if not pts or p != pts[-1]:
+                pts.append(p)
+        if len(pts) > 1 and pts[0] == pts[-1]:
+            pts.pop()
+        return pts if len({tuple(p) for p in pts}) >= 3 else None
+    out = []
+    for p in multipolygon.geoms:
+        outer = ring(p.exterior)
+        if outer:
+            out.append({"outer": outer, "holes": [h for h in map(ring, p.interiors) if h]})
+    return out
 
 
 # --------------------------------------------------------------------------
