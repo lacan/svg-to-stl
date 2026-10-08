@@ -96,3 +96,19 @@ as a single multi-part object and assign a filament to each part.
 - Text must be converted to paths (*Path > Object to Path*).
 - Gradient fills use the color of their first stop.
 - Size comes from the SVG's physical units (`width="80mm"` etc., 96 dpi for px).
+
+## License
+
+BSD 3-Clause, see [LICENSE](LICENSE).
+
+Third-party code, all under permissive licenses compatible with BSD-3:
+
+| Component | License | How it is used |
+|---|---|---|
+| [svgelements](https://github.com/meerk40t/svgelements) | MIT | dependency; wheel bundled in `site/vendor/` (license inside the wheel) |
+| [Shapely](https://github.com/shapely/shapely) | BSD-3-Clause | dependency (bundles the GEOS library, LGPL-2.1) |
+| [NumPy](https://numpy.org) | BSD-3-Clause | dependency |
+| [trimesh](https://github.com/mikedh/trimesh) | MIT | dependency (command line / local UI) |
+| [mapbox-earcut](https://github.com/skogler/mapbox_earcut_python) | ISC | dependency of trimesh |
+| [three.js](https://threejs.org) | MIT | bundled in `web/vendor/`, see `LICENSE-three.js.txt` |
+| [Pyodide](https://pyodide.org) | MPL-2.0 | loaded by the website from the jsDelivr CDN, not redistributed |
