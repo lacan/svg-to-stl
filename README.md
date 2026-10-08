@@ -1,6 +1,16 @@
-# svg2stl
+# svg-to-stl
 
-Convert an SVG into one STL per fill color for multi-color 3D printing. Runs fully offline.
+Convert an SVG into one STL per fill color for multi-color 3D printing.
+Use it from the command line, as a local web UI, or as a website that runs
+entirely in the browser.
+
+## About
+
+Inspired by the work of [svg2solid](https://svg2solid.rknt.de/), I wanted a
+tool to simplify working with multicolor flat prints based off STLs. The
+result is this tool.
+
+**Disclaimer:** this was done using [Claude Code](https://claude.com/claude-code).
 
 ## Setup (once)
 

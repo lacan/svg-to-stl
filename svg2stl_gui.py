@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-svg2stl web UI - a local-only server that previews the extrusions in the
+svg-to-stl web UI - a local-only server that previews the extrusions in the
 browser and exports the STLs with the same code as the command line tool.
 
     svg2stl_gui.bat [file.svg] [--no-browser]
@@ -170,7 +170,7 @@ def main():
     if server is None:
         raise SystemExit("no free port between 8765 and 8799")
     url = f"http://127.0.0.1:{server.server_port}/"
-    print(f"svg2stl UI running at {url}  (Ctrl+C to stop)")
+    print(f"svg-to-stl UI running at {url}  (Ctrl+C to stop)")
     if "--no-browser" not in sys.argv:
         threading.Timer(0.5, lambda: webbrowser.open(url)).start()
     try:
