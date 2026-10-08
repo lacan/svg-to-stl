@@ -7,7 +7,7 @@ entirely in the browser.
 ## About
 
 Inspired by the work of [svg2solid](https://svg2solid.rknt.de/), I wanted a
-tool to simplify working with multicolor flat prints based off STLs. The
+tool to simplify working with multicolor flat prints based off SVGs. The
 result is this tool.
 
 **Disclaimer:** this was done using [Claude Code](https://claude.com/claude-code).
