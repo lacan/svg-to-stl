@@ -267,6 +267,17 @@
   <div class="stats" id="stats" hidden></div>
 </main>
 
+<script>
+// Browsers block module imports and workers for pages opened from disk, so
+// the app script below never runs there; say so instead of doing nothing.
+if (location.protocol === "file:") {
+  const e = document.getElementById("empty");
+  e.innerHTML = "<div>This page must be served over http to work.<br>"
+    + "Run <b>serve_site.bat</b> (or <code>python build_site.py --serve</code>) "
+    + "and open http://127.0.0.1:8000/</div>";
+  e.style.color = "var(--danger)";
+}
+</script>
 <script type="module">
 import * as THREE from "three";
 import { OrbitControls } from "./vendor/OrbitControls.js";

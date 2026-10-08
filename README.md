@@ -30,9 +30,11 @@ SVG never leaves the visitor's computer and there is no server to pay for.
 STLs are downloaded as one ZIP.
 
 ```
-python build_site.py --serve     # assemble _site/ and serve http://127.0.0.1:8000/
+serve_site.bat                   # build _site/, serve it and open http://127.0.0.1:8000/
 ```
 
+- Opening `site/index.html` directly from disk does not work (browsers block
+  workers on `file://`); always go through the local server above.
 - `build_site.py` copies `site/`, `svg2stl.py` and the three.js files into
   `_site/`. `svg2stl.py` is shared with the command line, not duplicated.
 - Pyodide (Python + numpy + shapely, ~15 MB on the first visit, then cached)

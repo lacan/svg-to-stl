@@ -35,7 +35,19 @@ if __name__ == "__main__":
     build()
     if "--serve" in sys.argv:
         import functools
+        import webbrowser
         from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
-        handler = functools.partial(SimpleHTTPRequestHandler, directory=str(OUT))
+
+        class Handler(SimpleHTTPRequestHandler):
+            def end_headers(self):
+                self.send_header("Cache-Control", "no-store")  # always test the latest build
+                super().end_headers()
+
+        server = ThreadingHTTPServer(("127.0.0.1", 8000), functools.partial(Handler, directory=str(OUT)))
         print("serving http://127.0.0.1:8000/  (Ctrl+C to stop)")
-        ThreadingHTTPServer(("127.0.0.1", 8000), handler).serve_forever()
+        if "--no-browser" not in sys.argv:
+            webbrowser.open("http://127.0.0.1:8000/")
+        try:
+            server.serve_forever()
+        except KeyboardInterrupt:
+            pass
