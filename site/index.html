@@ -117,19 +117,6 @@
   .tabs button[aria-selected="true"] { background: var(--panel-2); border-color: var(--border); color: var(--text); }
   .thumb.mirrored img { transform: scaleX(-1); }
   .warn { color: var(--danger); font-size: 12px; margin: 6px 0 0; padding-left: 16px; }
-  .kofi {
-    display: inline-flex; align-items: center; gap: 6px; text-decoration: none;
-    background: #ff5e5b; color: #fff; border-radius: 6px; padding: 5px 10px;
-    font-weight: 600; font-size: 12px; white-space: nowrap;
-  }
-  .kofi:hover { filter: brightness(1.08); }
-  header { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
-  .thanks {
-    margin-top: 10px; padding: 10px; border-radius: 8px; background: var(--panel-2);
-    border: 1px solid var(--border); display: flex; gap: 10px; align-items: center;
-    justify-content: space-between;
-  }
-  .thanks[hidden] { display: none; }
   details summary { cursor: pointer; color: var(--muted); font-size: 11px; text-transform: uppercase;
     letter-spacing: .8px; font-weight: 600; }
   details ul { margin: 8px 0 0; padding-left: 18px; color: var(--muted); font-size: 12px; }
@@ -174,11 +161,8 @@
 <body>
 <aside>
   <header>
-    <div>
-      <h1>SVG to STL</h1>
-      <p>Multi-color extrusions and stamps for 3D printing</p>
-    </div>
-    <a class="kofi" data-kofi target="_blank" rel="noopener" hidden>☕ Support</a>
+    <h1>SVG to STL</h1>
+    <p>Multi-color extrusions and stamps for 3D printing</p>
   </header>
   <div class="tabs" role="tablist">
     <button role="tab" data-mode="extrude" aria-selected="true" title="One part per color, plus an optional backplate">Extrude</button>
@@ -273,12 +257,7 @@
     <section>
       <button class="primary" id="export" disabled>Download STL files</button>
       <div id="status"></div>
-      <ul id="files"></ul>
-      <div class="thanks" id="thanks" hidden>
-        <span>Saved you some time?</span>
-        <a class="kofi" data-kofi target="_blank" rel="noopener">☕ Buy me a coffee</a>
-      </div>
-    </section>
+      <ul id="files"></ul>    </section>
 
     <section>
       <details>
@@ -326,15 +305,7 @@ if (location.protocol === "file:") {
 import * as THREE from "three";
 import { OrbitControls } from "./vendor/OrbitControls.js";
 
-// Your Ko-fi page, e.g. "https://ko-fi.com/yourname". Leave empty to hide the buttons.
-const KOFI_URL = "";
-
 const $ = (id) => document.getElementById(id);
-document.querySelectorAll("[data-kofi]").forEach((a) => {
-  if (!KOFI_URL) return a.remove();
-  a.href = KOFI_URL;
-  a.hidden = false;
-});
 const state = {
   mode: "extrude",       // "extrude" | "stamp"
   data: null,            // last load result
@@ -737,7 +708,7 @@ async function openFile(file) {
   thumb.dataset.url = URL.createObjectURL(new Blob([text], { type: "image/svg+xml" }));
   thumb.innerHTML = `<img alt="SVG preview" src="${thumb.dataset.url}">`;
   thumb.hidden = false;
-  $("files").innerHTML = ""; $("thanks").hidden = true;
+  $("files").innerHTML = "";
   await load({ newFile: true });
 }
 
@@ -781,9 +752,7 @@ $("export").addEventListener("click", async () => {
     setTimeout(() => URL.revokeObjectURL(url), 60000);
     const n = result.files.length;
     status(`Downloaded ${result.zipName} (${n} STL file${n === 1 ? "" : "s"})`, "ok");
-    $("files").innerHTML = result.files.map((f) => `<li>${esc(f.name)}</li>`).join("");
-    $("thanks").hidden = !KOFI_URL;
-  } catch (e) {
+    $("files").innerHTML = result.files.map((f) => `<li>${esc(f.name)}</li>`).join("");  } catch (e) {
     status(e.message, "err");
   } finally {
     updateExportLabel();

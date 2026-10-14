@@ -55,8 +55,6 @@ python build_site.py --serve     # same, on any OS
 - Meshes are built by `extrude_triangles()` (shapely's constrained Delaunay
   triangulation); the stamp's box and handle are generated directly as closed
   meshes (`box_triangles()`, `handle_triangles()`).
-- Ko-fi: set `KOFI_URL` near the top of the script in `site/index.html`; the
-  buttons stay hidden while it is empty.
 
 ### Publishing on GitHub Pages
 
