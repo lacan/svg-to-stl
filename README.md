@@ -19,17 +19,17 @@ The left panel has two tabs:
   optional backplate (the union of all shapes) extruded downwards. Import all
   STLs together into your slicer as one multi-part object and give each part
   a filament.
-- **Stamp**: makes a rubber-stamp style print in three kinds of parts:
-  - `<name>_<rrggbb>.stl`: the design, mirrored left-right so the stamped
-    print reads correctly, as one relief part per color. Each color keeps its
-    own height, so set the background color(s) to 0.
-  - `<name>_box.stl`: the design's bounding box plus a margin (optionally
-    rounded), under the relief, with a blind threaded hole in its back.
+- **Stamp**: makes a rubber-stamp style print in two files:
+  - `<name>_stamp.stl`: the relief on its box, as one object. The relief is
+    the design mirrored left-right so the stamped print reads correctly; each
+    color keeps its own height, so set the background color(s) to 0. The box
+    is the design's bounding box plus a margin (optionally rounded), with a
+    blind threaded hole in its back.
   - `<name>_handle.stl`: a knob (30 mm tall by default) with a matching
     threaded post, exported upright for printing (flat top on the bed, post
     up, no supports needed).
 
-  Print the relief and box together, relief up, sand the relief flat, then
+  Print the stamp relief up, sand the relief flat, then
   screw the handle in. The thread is a right-handed trapezoidal thread
   (16 mm, 2 mm pitch, 8 mm long, 0.3 mm radial clearance by default); raise
   the clearance if it is too tight for your printer.

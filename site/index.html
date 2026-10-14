@@ -290,7 +290,7 @@
           <li>Clipping paths and masks are not applied; release or apply them in your editor first.</li>
           <li>Gradients use the color of their first stop.</li>
           <li>Size comes from the SVG's physical size (mm, cm, in; px at 96 dpi), or set a width.</li>
-          <li>Stamp: print the relief and box together, relief up, and sand the relief flat. Print the handle separately and screw it in.</li>
+          <li>Stamp: the relief and box come as one STL. Print it relief up and sand the relief flat. Print the handle separately and screw it in.</li>
         </ul>
       </details>
     </section>
@@ -612,7 +612,7 @@ function updateExportLabel() {
   const btn = $("export");
   if (!d) { btn.disabled = true; btn.textContent = "Download STL files"; return; }
   const colors = d.colors.filter((c) => (state.depths[c.hex] || 0) > 0).length;
-  const n = d.mode === "stamp" ? (colors ? colors + 2 : 0)   // + box and handle
+  const n = d.mode === "stamp" ? (colors ? 2 : 0)   // relief + box in one file, handle
           : colors + ($("bpOn").checked && +$("bpDepth").value > 0 ? 1 : 0);
   btn.disabled = n === 0;
   btn.textContent = `Download ${n} STL file${n === 1 ? "" : "s"} (.zip)`;

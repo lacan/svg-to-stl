@@ -370,6 +370,7 @@ class StampOptions:
 THREAD_DEPTH = 0.5    # x pitch, radial depth of the thread profile
 POST_GAP = 0.5        # mm between the post's tip and the bottom of the hole
 HOLE_WALL = 1.0       # mm, minimum material around and above the hole
+RELIEF_SINK = 0.2     # mm, the exported relief reaches this far into the box
 POST_FLARE = 0.7      # mm, 45 degree flare at the post's root (the hole's mouth is chamfered to match)
 
 

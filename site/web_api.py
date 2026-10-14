@@ -4,7 +4,7 @@ Glue between the static web page and svg2stl, run in the browser by Pyodide
 a ZIP of STL files.
 
 Every request has "mode": "extrude" (per-color parts + optional backplate) or
-"stamp" (mirrored per-color relief + box + screw-on handle, see svg2stl).
+"stamp" (mirrored relief merged with its box + screw-on handle, see svg2stl).
 """
 
 import contextlib
@@ -15,6 +15,8 @@ import re
 import zipfile
 from dataclasses import fields
 from pathlib import Path
+
+import numpy as np
 
 import svg2stl
 
@@ -124,15 +126,21 @@ def export(req_json):
         depths = {svg2stl.normalize_hex(c): float(d) for c, d in req.get("depths", {}).items()}
         stem = _svg["name"]
         parts = []  # (file name, triangles)
-        for color, geom in groups.items():
-            depth = depths.get(color, 0.0)
-            if depth > 0:
-                parts.append((f"{stem}_{color}.stl", svg2stl.extrude_triangles(geom, depth, 0.0)))
         if stamp:
-            if parts:
-                parts.append((f"{stem}_box.stl", svg2stl.box_triangles(box, opts)))
+            # Relief and box in one STL, so the slicer sees a single object.
+            # The relief starts inside the box: overlapping shells merge
+            # cleanly when sliced, merely touching ones may not.
+            sink = svg2stl.RELIEF_SINK
+            relief = [svg2stl.extrude_triangles(geom, depths[color] + sink, -sink)
+                      for color, geom in groups.items() if depths.get(color, 0.0) > 0]
+            if relief:
+                parts.append((f"{stem}_stamp.stl", np.concatenate([*relief, svg2stl.box_triangles(box, opts)])))
                 parts.append((f"{stem}_handle.stl", svg2stl.handle_triangles(opts, knob)))
         else:
+            for color, geom in groups.items():
+                depth = depths.get(color, 0.0)
+                if depth > 0:
+                    parts.append((f"{stem}_{color}.stl", svg2stl.extrude_triangles(geom, depth, 0.0)))
             backplate = float(req.get("backplate") or 0)
             if backplate > 0:
                 outline = svg2stl.backplate_outline(everything, float(req.get("margin") or 0))
