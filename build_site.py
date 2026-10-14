@@ -5,8 +5,8 @@ Assemble the static website (browser version of svg2stl) into _site/.
     python build_site.py            # build
     python build_site.py --serve    # build, then serve on http://127.0.0.1:8000/
 
-The page runs svg2stl.py itself in the browser (Pyodide), so the converter
-code is shared with the command line tool; only the UI differs (site/).
+The page (site/) runs svg2stl.py itself in the browser with Pyodide; it is
+kept at the top level so it can also be imported and tested with plain Python.
 """
 
 import shutil
@@ -25,8 +25,6 @@ def build():
         shutil.rmtree(old) if old.is_dir() else old.unlink()
     shutil.copytree(ROOT / "site", OUT, dirs_exist_ok=True)
     shutil.copy2(ROOT / "svg2stl.py", OUT / "svg2stl.py")
-    for f in (ROOT / "web" / "vendor").iterdir():  # three.js
-        shutil.copy2(f, OUT / "vendor" / f.name)
     (OUT / ".nojekyll").touch()  # serve files as-is on GitHub Pages
     print(f"built {OUT}")
 

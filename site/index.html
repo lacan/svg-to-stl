@@ -110,6 +110,12 @@
   }
   .drop:hover, .drop.over { border-color: var(--accent); color: var(--text); }
   .drop b { color: var(--accent); }
+  .tabs { display: flex; gap: 4px; padding: 8px 16px; border-bottom: 1px solid var(--border); }
+  .tabs button {
+    flex: 1; background: transparent; border-color: transparent; color: var(--muted); font-weight: 600;
+  }
+  .tabs button[aria-selected="true"] { background: var(--panel-2); border-color: var(--border); color: var(--text); }
+  .thumb.mirrored img { transform: scaleX(-1); }
   .warn { color: var(--danger); font-size: 12px; margin: 6px 0 0; padding-left: 16px; }
   .kofi {
     display: inline-flex; align-items: center; gap: 6px; text-decoration: none;
@@ -170,10 +176,14 @@
   <header>
     <div>
       <h1>SVG to STL</h1>
-      <p>Multi-color extrusion for 3D printing</p>
+      <p>Multi-color extrusions and stamps for 3D printing</p>
     </div>
     <a class="kofi" data-kofi target="_blank" rel="noopener" hidden>☕ Support</a>
   </header>
+  <div class="tabs" role="tablist">
+    <button role="tab" data-mode="extrude" aria-selected="true" title="One part per color, plus an optional backplate">Extrude</button>
+    <button role="tab" data-mode="stamp" aria-selected="false" title="Mirrored relief on a box, with a screw-on handle">Stamp</button>
+  </div>
   <div class="scroll">
     <section>
       <h2>Source</h2>
@@ -207,9 +217,10 @@
         <input id="allDepth" type="number" min="0" step="0.1" value="1" style="width:62px" title="Depth for all colors">
         <button id="applyAll" title="Set this depth for every color">Set all</button></span></h2>
       <div id="colors"><p class="hint">Load an SVG to see its fill colors.</p></div>
+      <p class="hint" data-show="stamp" style="word-break:normal" hidden>Relief height per color. Set the background to 0 so only the design stands out.</p>
     </section>
 
-    <section>
+    <section data-show="extrude">
       <h2>Backplate</h2>
       <label class="check"><input id="bpOn" type="checkbox"> Create backplate (union of all shapes)</label>
       <div class="grid2" style="margin-top:8px">
@@ -218,6 +229,38 @@
         <div class="field"><label for="bpMargin">Margin</label>
           <div class="unit" data-unit="mm"><input id="bpMargin" type="number" min="0" step="0.5" value="0"></div></div>
       </div>
+    </section>
+
+    <section data-show="stamp" hidden>
+      <h2>Stamp box</h2>
+      <div class="grid2">
+        <div class="field"><label for="stMargin">Margin</label>
+          <div class="unit" data-unit="mm"><input id="stMargin" type="number" min="0" step="0.5" value="3"></div></div>
+        <div class="field"><label for="stRadius">Corner radius</label>
+          <div class="unit" data-unit="mm"><input id="stRadius" type="number" min="0" step="0.5" value="2"></div></div>
+        <div class="field"><label for="stThick">Thickness</label>
+          <div class="unit" data-unit="mm"><input id="stThick" type="number" min="1" step="0.5" value="10"></div></div>
+      </div>
+      <p class="hint" style="word-break:normal">The design is mirrored so prints read correctly. The box gets a threaded hole in its back.</p>
+    </section>
+
+    <section data-show="stamp" hidden>
+      <h2>Handle &amp; thread</h2>
+      <div class="grid2">
+        <div class="field"><label for="knobDia">Knob diameter</label>
+          <div class="unit" data-unit="mm"><input id="knobDia" type="number" min="0" step="1" placeholder="auto"></div></div>
+        <div class="field"><label for="knobH">Knob height</label>
+          <div class="unit" data-unit="mm"><input id="knobH" type="number" min="5" step="1" value="30"></div></div>
+        <div class="field"><label for="thDia">Thread diameter</label>
+          <div class="unit" data-unit="mm"><input id="thDia" type="number" min="4" step="1" value="16"></div></div>
+        <div class="field"><label for="thPitch">Pitch</label>
+          <div class="unit" data-unit="mm"><input id="thPitch" type="number" min="0.5" step="0.25" value="2"></div></div>
+        <div class="field"><label for="thLen">Thread length</label>
+          <div class="unit" data-unit="mm"><input id="thLen" type="number" min="1" step="0.5" value="8"></div></div>
+        <div class="field"><label for="thClear">Clearance</label>
+          <div class="unit" data-unit="mm"><input id="thClear" type="number" min="0" step="0.05" value="0.3"></div></div>
+      </div>
+      <p class="hint" style="word-break:normal">The handle is exported upright for printing: flat top on the bed, threaded post up. Raise the clearance if it is too tight to screw in.</p>
     </section>
 
     <section>
@@ -247,6 +290,7 @@
           <li>Clipping paths and masks are not applied; release or apply them in your editor first.</li>
           <li>Gradients use the color of their first stop.</li>
           <li>Size comes from the SVG's physical size (mm, cm, in; px at 96 dpi), or set a width.</li>
+          <li>Stamp: print the relief and box together, relief up, and sand the relief flat. Print the handle separately and screw it in.</li>
         </ul>
       </details>
     </section>
@@ -292,11 +336,18 @@ document.querySelectorAll("[data-kofi]").forEach((a) => {
   a.hidden = false;
 });
 const state = {
+  mode: "extrude",       // "extrude" | "stamp"
   data: null,            // last load result
   file: null,            // {name, size, text} of the chosen SVG
   depths: {},            // hex -> mm
   visible: {},           // hex -> bool
-  meshes: {},            // hex -> THREE.Group (mesh + edges), also "backplate"
+  meshes: {},            // hex -> THREE.Group (mesh + edges), also "backplate", "box", "handle"
+};
+// Stamp inputs -> svg2stl.StampOptions fields.
+const STAMP_FIELDS = {
+  stMargin: "margin", stRadius: "corner_radius", stThick: "box_thickness", knobDia: "knob_diameter",
+  knobH: "knob_height", thDia: "thread_diameter", thPitch: "thread_pitch", thLen: "thread_length",
+  thClear: "clearance",
 };
 
 // ---------------------------------------------------------------- settings
@@ -308,7 +359,9 @@ function saveSettings() {
       depths: state.depths, width: $("width").value, scale: $("scale").value,
       tolerance: $("tolerance").value, occlude: $("occlude").checked,
       bpOn: $("bpOn").checked, bpDepth: $("bpDepth").value, bpMargin: $("bpMargin").value,
+      mode: state.mode, stamp: Object.fromEntries(Object.keys(STAMP_FIELDS).map((id) => [id, $(id).value])),
     }));
+    localStorage.setItem(STORE_KEY + "mode", state.mode);
   } catch {}
 }
 const fileKey = () => state.file ? `${state.file.name}:${state.file.size}` : "";
@@ -360,7 +413,18 @@ function toShapes(polygons) {
 
 // Extrude once at 1 mm; depth changes only scale Z, so sliders are instant.
 function makePart(polygons, hex) {
-  const geom = new THREE.ExtrudeGeometry(toShapes(polygons), { depth: 1, bevelEnabled: false, curveSegments: 1 });
+  return makeGroup(new THREE.ExtrudeGeometry(toShapes(polygons), { depth: 1, bevelEnabled: false, curveSegments: 1 }), hex);
+}
+
+// A finished mesh from Python (flat x, y, z list), e.g. the stamp's box and handle.
+function makeMeshPart(positions, hex) {
+  const geom = new THREE.BufferGeometry();
+  geom.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+  geom.computeVertexNormals();
+  return makeGroup(geom, hex, 40);
+}
+
+function makeGroup(geom, hex, edgeAngle = 25) {
   const color = new THREE.Color("#" + hex);
   const mat = new THREE.MeshStandardMaterial({
     color, roughness: 0.65, metalness: 0.0, polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1,
@@ -368,7 +432,7 @@ function makePart(polygons, hex) {
   const mesh = new THREE.Mesh(geom, mat);
   const hsl = {}; color.getHSL(hsl);
   const edgeColor = hsl.l > 0.5 ? color.clone().multiplyScalar(0.55) : color.clone().lerp(new THREE.Color(0xffffff), 0.45);
-  const edges = new THREE.LineSegments(new THREE.EdgesGeometry(geom, 25),
+  const edges = new THREE.LineSegments(new THREE.EdgesGeometry(geom, edgeAngle),
                                        new THREE.LineBasicMaterial({ color: edgeColor }));
   const g = new THREE.Group();
   g.add(mesh, edges);
@@ -390,12 +454,17 @@ function buildModel() {
   if (!d) return;
   // A part that fails to triangulate must not take the rest of the preview down.
   const failed = [];
-  const add = (key, polygons, hex, label) => {
-    try { state.meshes[key] = makePart(polygons, hex); model.add(state.meshes[key]); }
+  const add = (key, make, label) => {
+    try { state.meshes[key] = make(); model.add(state.meshes[key]); }
     catch (e) { console.error(label, e); failed.push(label); }
   };
-  d.colors.forEach((c) => add(c.hex, c.polygons, c.hex, "#" + c.hex));
-  add("backplate", d.backplate, "9a9aa6", "backplate");
+  d.colors.forEach((c) => add(c.hex, () => makePart(c.polygons, c.hex), "#" + c.hex));
+  if (d.mode === "stamp") {
+    add("box", () => makeMeshPart(d.box, "9a9aa6"), "box");
+    add("handle", () => makeMeshPart(d.handle, "b08a62"), "handle");
+  } else {
+    add("backplate", () => makePart(d.backplate, "9a9aa6"), "backplate");
+  }
   if (failed.length) status(`Preview incomplete, could not mesh: ${failed.join(", ")} (export is unaffected)`, "err");
 
   if (grid) { scene.remove(grid); grid.geometry.dispose(); grid.material.dispose(); }
@@ -428,6 +497,24 @@ function applyPreview() {
     g.userData.edges.visible = showEdges;
     if (g.visible) top = Math.max(top, depth + g.position.z);
   });
+  const maxColor = Math.max(0, ...d.colors.filter((c) => state.visible[c.hex] !== false)
+                                         .map((c) => state.depths[c.hex] || 0));
+  const s = $("stats");
+  s.hidden = false;
+  if (d.mode === "stamp") {
+    for (const key of ["box", "handle"]) {
+      const g = state.meshes[key];
+      if (g) g.userData.edges.visible = showEdges;
+    }
+    if (state.meshes.handle) state.meshes.handle.position.z = -2 * gap;
+    const bottom = d.boxThickness + d.knobHeight;
+    if (grid) grid.position.z = -bottom - 2 * gap - 0.01;
+    const [w, h] = d.size;
+    s.innerHTML = `<b>${fmt(w)}</b> × <b>${fmt(h)}</b> × <b>${fmt(maxColor + bottom)}</b> mm`
+                + ` · knob ⌀ <b>${fmt(d.knobDiameter)}</b> mm`;
+    updateExportLabel();
+    return;
+  }
   const bp = state.meshes.backplate;
   const bpOn = $("bpOn").checked;
   const bpDepth = Math.max(+$("bpDepth").value || 0, 0);
@@ -440,8 +527,6 @@ function applyPreview() {
   }
   if (grid) grid.position.z = (bpShown ? -bpDepth : 0) - 0.01;
 
-  const maxColor = Math.max(0, ...d.colors.filter((c) => state.visible[c.hex] !== false)
-                                         .map((c) => state.depths[c.hex] || 0));
   const total = maxColor + (bpShown ? bpDepth : 0);
   let [w, h] = d.size;
   if (bpShown) {
@@ -449,8 +534,6 @@ function applyPreview() {
     w = Math.max(w, box.max.x) - Math.min(0, box.min.x);
     h = Math.max(h, box.max.y) - Math.min(0, box.min.y);
   }
-  const s = $("stats");
-  s.hidden = false;
   s.innerHTML = `<b>${fmt(w)}</b> × <b>${fmt(h)}</b> × <b>${fmt(total)}</b> mm`;
   updateExportLabel();
 }
@@ -461,8 +544,9 @@ function setView(kind, keepTarget = false) {
   const d = state.data;
   if (!d) return;
   const [w, h] = d.size;
-  const center = new THREE.Vector3(w / 2, h / 2, 0);
-  const r = Math.max(w, h, 10);
+  const depth = d.mode === "stamp" ? d.boxThickness + d.knobHeight : 0;
+  const center = new THREE.Vector3(w / 2, h / 2, -depth / 2);
+  const r = Math.max(w, h, depth, 10);
   const dist = r / (2 * Math.tan(THREE.MathUtils.degToRad(camera.fov / 2))) * 1.25;
   const dirs = {
     iso: new THREE.Vector3(0.55, -0.85, 0.9),
@@ -527,8 +611,9 @@ function updateExportLabel() {
   const d = state.data;
   const btn = $("export");
   if (!d) { btn.disabled = true; btn.textContent = "Download STL files"; return; }
-  const n = d.colors.filter((c) => (state.depths[c.hex] || 0) > 0).length
-          + ($("bpOn").checked && +$("bpDepth").value > 0 ? 1 : 0);
+  const colors = d.colors.filter((c) => (state.depths[c.hex] || 0) > 0).length;
+  const n = d.mode === "stamp" ? (colors ? colors + 2 : 0)   // + box and handle
+          : colors + ($("bpOn").checked && +$("bpDepth").value > 0 ? 1 : 0);
   btn.disabled = n === 0;
   btn.textContent = `Download ${n} STL file${n === 1 ? "" : "s"} (.zip)`;
 }
@@ -580,11 +665,13 @@ function geometryRequest() {
     tolerance: +$("tolerance").value || 0.05,
     occlude: $("occlude").checked,
     margin: +$("bpMargin").value || 0,
+    mode: state.mode,
+    stamp: Object.fromEntries(Object.entries(STAMP_FIELDS).map(([id, key]) => [key, $(id).value])),
   };
 }
 
 let loadSeq = 0;
-async function load({ newFile = false } = {}) {
+async function load({ newFile = false, fitView = false } = {}) {
   if (!state.file) return;
   const seq = ++loadSeq;
   if (engineReady) busy("Computing…");
@@ -604,10 +691,14 @@ async function load({ newFile = false } = {}) {
     $("warnings").hidden = !uniq.length;
     renderColors();
     buildModel();
-    if (newFile) setView("iso");
+    if (newFile || fitView) setView("iso");
     saveSettings();
   } catch (e) {
-    if (seq === loadSeq) status(e.message, "err");
+    if (seq === loadSeq) {
+      status(e.message, "err");
+      // Don't leave a preview of the other mode standing after a failed switch.
+      if (state.data && state.data.mode !== state.mode) { disposeModel(); state.data = null; updateExportLabel(); }
+    }
   } finally {
     if (seq === loadSeq && engineReady) idle();
   }
@@ -630,6 +721,8 @@ async function openFile(file) {
     for (const k of ["width", "scale", "tolerance", "bpDepth", "bpMargin"]) if (s[k] != null) $(k).value = s[k];
     $("occlude").checked = s.occlude ?? true;
     $("bpOn").checked = !!s.bpOn;
+    for (const [id, v] of Object.entries(s.stamp || {})) if (id in STAMP_FIELDS && v != null) $(id).value = v;
+    if (s.mode) setMode(s.mode);
     state.depths = { ...s.depths };
   }
   $("dropText").innerHTML = `<b>${esc(file.name)}</b><br>choose another`;
@@ -654,7 +747,8 @@ window.addEventListener("drop", (e) => {
   openFile(e.dataTransfer.files[0]);
 });
 
-for (const id of ["width", "scale", "tolerance", "bpMargin"]) $(id).addEventListener("input", reloadSoon);
+for (const id of ["width", "scale", "tolerance", "bpMargin", ...Object.keys(STAMP_FIELDS)])
+  $(id).addEventListener("input", reloadSoon);
 $("occlude").addEventListener("change", reloadSoon);
 for (const id of ["bpOn", "bpDepth", "explode", "edges"])
   $(id).addEventListener("input", () => { applyPreview(); saveSettings(); });
@@ -689,6 +783,23 @@ $("export").addEventListener("click", async () => {
     updateExportLabel();
   }
 });
+
+// ---------------------------------------------------------------- mode tabs
+function setMode(mode) {
+  state.mode = mode === "stamp" ? "stamp" : "extrude";
+  document.querySelectorAll("[role=tab]").forEach((b) =>
+    b.setAttribute("aria-selected", String(b.dataset.mode === state.mode)));
+  document.querySelectorAll("[data-show]").forEach((el) => { el.hidden = el.dataset.show !== state.mode; });
+  $("thumb").classList.toggle("mirrored", state.mode === "stamp");
+}
+document.querySelectorAll("[role=tab]").forEach((b) => b.addEventListener("click", () => {
+  if (b.dataset.mode === state.mode) return;
+  setMode(b.dataset.mode);
+  $("files").innerHTML = "";
+  try { localStorage.setItem(STORE_KEY + "mode", state.mode); } catch {}
+  if (state.file) load({ fitView: true });
+}));
+try { setMode(localStorage.getItem(STORE_KEY + "mode")); } catch { setMode("extrude"); }
 
 // ---------------------------------------------------------------- start
 resize();

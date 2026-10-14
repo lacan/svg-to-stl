@@ -1,5 +1,0 @@
-svgelements>=1.9
-shapely>=2.0
-trimesh>=4.0
-numpy
-mapbox-earcut

@@ -1,8 +1,10 @@
 """
 Glue between the static web page and svg2stl, run in the browser by Pyodide
-(see worker.js). Mirrors the /api/load and /api/export endpoints of the local
-UI, but takes the SVG's content instead of a path and returns a ZIP instead of
-writing files.
+(see worker.js). Takes the SVG's content and returns the preview geometry, or
+a ZIP of STL files.
+
+Every request has "mode": "extrude" (per-color parts + optional backplate) or
+"stamp" (mirrored per-color relief + box + screw-on handle, see svg2stl).
 """
 
 import contextlib
@@ -11,6 +13,7 @@ import io
 import json
 import re
 import zipfile
+from dataclasses import fields
 from pathlib import Path
 
 import svg2stl
@@ -57,6 +60,16 @@ def _geometry(req, warnings):
     return svg2stl.prepare(INPUT, scale, width, tolerance, occlude, shapes)
 
 
+def _stamp(req, groups, everything):
+    """Stamp mode: (mirrored groups, box outline, options, knob diameter)."""
+    given = req.get("stamp") or {}
+    opts = svg2stl.StampOptions(**{f.name: float(given[f.name]) for f in fields(svg2stl.StampOptions)
+                                   if given.get(f.name) not in (None, "")})
+    groups, box = svg2stl.stamp_layout(groups, everything, opts)
+    svg2stl.check_stamp(opts, box)
+    return groups, box, opts, svg2stl.knob_diameter(opts, box)
+
+
 def _reply(fn):
     """Run fn and return JSON; errors become {"error": ...} for the page."""
     try:
@@ -70,16 +83,33 @@ def load(req_json):
         req = json.loads(req_json)
         warnings = []
         groups, everything = _geometry(req, warnings)
-        _, _, w, h = everything.bounds
-        margin = float(req.get("margin") or 0)
-        return {
-            "name": _svg["name"],
-            "size": [w, h],
-            "warnings": warnings,
-            "colors": [{"hex": c, "area": g.area, "regions": len(g.geoms),
-                        "polygons": svg2stl.polygons_json(g)} for c, g in groups.items()],
-            "backplate": svg2stl.polygons_json(svg2stl.backplate_outline(everything, margin)),
-        }
+        result = {"name": _svg["name"], "warnings": warnings, "mode": "extrude"}
+        if req.get("mode") == "stamp":
+            groups, box, opts, knob = _stamp(req, groups, everything)
+            minx, miny, maxx, maxy = box.bounds
+            c = box.centroid
+            # Coarser threads for the preview keep it fast; the export uses full detail.
+            handle = svg2stl.handle_triangles(opts, knob, segments=48, rows_per_pitch=6)
+            handle += (c.x, c.y, -opts.box_thickness - opts.knob_height)
+            result.update({
+                "mode": "stamp",
+                "size": [maxx - minx, maxy - miny],
+                "box": svg2stl.mesh_json(svg2stl.box_triangles(box, opts, segments=48, rows_per_pitch=6)),
+                "handle": svg2stl.mesh_json(handle),
+                "boxThickness": opts.box_thickness,
+                "knobHeight": opts.knob_height,
+                "knobDiameter": knob,
+            })
+        else:
+            _, _, w, h = everything.bounds
+            margin = float(req.get("margin") or 0)
+            result.update({
+                "size": [w, h],
+                "backplate": svg2stl.polygons_json(svg2stl.backplate_outline(everything, margin)),
+            })
+        result["colors"] = [{"hex": c, "area": g.area, "regions": len(g.geoms),
+                             "polygons": svg2stl.polygons_json(g)} for c, g in groups.items()]
+        return result
     return _reply(run)
 
 
@@ -88,26 +118,33 @@ def export(req_json):
     def run():
         req = json.loads(req_json)
         groups, everything = _geometry(req, [])
+        stamp = req.get("mode") == "stamp"
+        if stamp:
+            groups, box, opts, knob = _stamp(req, groups, everything)
         depths = {svg2stl.normalize_hex(c): float(d) for c, d in req.get("depths", {}).items()}
-        backplate = float(req.get("backplate") or 0)
         stem = _svg["name"]
-        files = []
-        with zipfile.ZipFile(ZIP_OUT, "w", zipfile.ZIP_DEFLATED) as z:
-            for color, geom in groups.items():
-                depth = depths.get(color, 0.0)
-                if depth <= 0:
-                    continue
-                tri = svg2stl.extrude_triangles(geom, depth, 0.0)
-                name = f"{stem}_{color}.stl"
-                z.writestr(name, svg2stl.stl_bytes(tri))
-                files.append({"name": name, "triangles": len(tri)})
+        parts = []  # (file name, triangles)
+        for color, geom in groups.items():
+            depth = depths.get(color, 0.0)
+            if depth > 0:
+                parts.append((f"{stem}_{color}.stl", svg2stl.extrude_triangles(geom, depth, 0.0)))
+        if stamp:
+            if parts:
+                parts.append((f"{stem}_box.stl", svg2stl.box_triangles(box, opts)))
+                parts.append((f"{stem}_handle.stl", svg2stl.handle_triangles(opts, knob)))
+        else:
+            backplate = float(req.get("backplate") or 0)
             if backplate > 0:
                 outline = svg2stl.backplate_outline(everything, float(req.get("margin") or 0))
-                tri = svg2stl.extrude_triangles(outline, backplate, -backplate)
-                name = f"{stem}_backplate.stl"
+                parts.append((f"{stem}_backplate.stl",
+                              svg2stl.extrude_triangles(outline, backplate, -backplate)))
+        if not parts:
+            raise ValueError("nothing to export: every depth is 0")
+        files = []
+        with zipfile.ZipFile(ZIP_OUT, "w", zipfile.ZIP_DEFLATED) as z:
+            for name, tri in parts:
                 z.writestr(name, svg2stl.stl_bytes(tri))
                 files.append({"name": name, "triangles": len(tri)})
-        if not files:
-            raise ValueError("nothing to export: every depth is 0")
-        return {"zip": str(ZIP_OUT), "zipName": f"{stem}_stl.zip", "files": files}
+        zip_name = f"{stem}_stamp_stl.zip" if stamp else f"{stem}_stl.zip"
+        return {"zip": str(ZIP_OUT), "zipName": zip_name, "files": files}
     return _reply(run)

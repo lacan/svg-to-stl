@@ -1,8 +1,7 @@
 # svg-to-stl
 
-Convert an SVG into one STL per fill color for multi-color 3D printing.
-Use it from the command line, as a local web UI, or as a website that runs
-entirely in the browser.
+Convert an SVG into one STL per fill color for multi-color 3D printing, or
+into a printable stamp with a screw-on handle. Runs entirely in the browser.
 
 ## About
 
@@ -12,45 +11,50 @@ result is this tool.
 
 **Disclaimer:** this was done using [Claude Code](https://claude.com/claude-code).
 
-## Setup (once)
+## Modes
 
-```
-python -m venv .venv
-.venv\Scripts\python -m pip install -r requirements.txt
-```
+The left panel has two tabs:
 
-## Web UI with 3D preview
+- **Extrude**: each fill color is extruded upwards by its own depth, with an
+  optional backplate (the union of all shapes) extruded downwards. Import all
+  STLs together into your slicer as one multi-part object and give each part
+  a filament.
+- **Stamp**: makes a rubber-stamp style print in three kinds of parts:
+  - `<name>_<rrggbb>.stl`: the design, mirrored left-right so the stamped
+    print reads correctly, as one relief part per color. Each color keeps its
+    own height, so set the background color(s) to 0.
+  - `<name>_box.stl`: the design's bounding box plus a margin (optionally
+    rounded), under the relief, with a blind threaded hole in its back.
+  - `<name>_handle.stl`: a knob (30 mm tall by default) with a matching
+    threaded post, exported upright for printing (flat top on the bed, post
+    up, no supports needed).
 
-```
-svg2stl_gui.bat [logo.svg]
-```
-
-Opens a page in your browser (served from `127.0.0.1` only; Three.js is
-bundled in `web/vendor`, so no internet is needed). Pick a file with
-*Browse…*, then adjust each color's depth, the backplate, size and curve
-detail while watching the 3D preview, and click *Export*. The STLs are written
-by the same code as the command line, into the same `<name>_stl` folder.
-Settings are remembered per SVG. Close the console window to stop the server.
+  Print the relief and box together, relief up, sand the relief flat, then
+  screw the handle in. The thread is a right-handed trapezoidal thread
+  (16 mm, 2 mm pitch, 8 mm long, 0.3 mm radial clearance by default); raise
+  the clearance if it is too tight for your printer.
 
 ## Website (runs in the visitor's browser)
 
-`site/` is a static version of the web UI for hosting. The converter
-(`svg2stl.py`) runs in the browser with [Pyodide](https://pyodide.org), so the
-SVG never leaves the visitor's computer and there is no server to pay for.
-STLs are downloaded as one ZIP.
+`site/` is a static page. The converter (`svg2stl.py`) runs in the browser
+with [Pyodide](https://pyodide.org), so the SVG never leaves the visitor's
+computer and there is no server to pay for. STLs are downloaded as one ZIP.
 
 ```
 serve_site.bat                   # build _site/, serve it and open http://127.0.0.1:8000/
+python build_site.py --serve     # same, on any OS
 ```
 
 - Opening `site/index.html` directly from disk does not work (browsers block
   workers on `file://`); always go through the local server above.
-- `build_site.py` copies `site/`, `svg2stl.py` and the three.js files into
-  `_site/`. `svg2stl.py` is shared with the command line, not duplicated.
+- `build_site.py` copies `site/` and `svg2stl.py` into `_site/`. It only needs
+  Python's standard library.
 - Pyodide (Python + numpy + shapely, ~15 MB on the first visit, then cached)
-  is loaded from the jsDelivr CDN; svgelements is bundled in `site/vendor/`.
-- In the browser, meshes are built by `extrude_triangles()` (shapely's
-  constrained Delaunay triangulation) instead of trimesh.
+  is loaded from the jsDelivr CDN; svgelements and three.js are bundled in
+  `site/vendor/`.
+- Meshes are built by `extrude_triangles()` (shapely's constrained Delaunay
+  triangulation); the stamp's box and handle are generated directly as closed
+  meshes (`box_triangles()`, `handle_triangles()`).
 - Ko-fi: set `KOFI_URL` near the top of the script in `site/index.html`; the
   buttons stay hidden while it is empty.
 
@@ -61,34 +65,6 @@ serve_site.bat                   # build _site/, serve it and open http://127.0.
 3. Every push to `main` runs `.github/workflows/pages.yml`, which builds
    `_site/` and deploys it to `https://<user>.github.io/<repo>/`. It can also
    be started by hand from the *Actions* tab.
-
-## Command line
-
-```
-svg2stl.bat logo.svg --list-colors                       # see which colors are in the file
-svg2stl.bat logo.svg -d ff0000=2 -d #00f=0.6 --default-depth 1
-svg2stl.bat logo.svg -i                                  # prompt for each color's depth
-svg2stl.bat logo.svg --default-depth 1 -b 1.5            # + 1.5 mm backplate
-```
-
-Output goes to `logo_stl\` next to the SVG:
-
-- `logo_<rrggbb>.stl` – one per fill color, extruded from Z=0 upwards
-- `logo_backplate.stl` – (with `-b MM`) union of all shapes, extruded from Z=0 downwards
-
-All files share one coordinate system: import them together into your slicer
-as a single multi-part object and assign a filament to each part.
-
-| Option | Meaning |
-|---|---|
-| `-d COLOR=MM` | depth for one color (repeatable; `0` skips the color) |
-| `--default-depth MM` | depth for all other colors (default 1.0) |
-| `-i` | ask for each depth interactively |
-| `-b MM` | create a backplate MM thick |
-| `--backplate-margin MM` | grow the backplate outline |
-| `--width MM` / `-s F` | resize the design to a width / by a factor |
-| `--tolerance MM` | curve smoothness (default 0.05) |
-| `--no-occlusion` | keep shapes hidden under others (by default they are cut away so parts don't overlap) |
 
 ## Notes
 
@@ -108,7 +84,5 @@ Third-party code, all under permissive licenses compatible with BSD-3:
 | [svgelements](https://github.com/meerk40t/svgelements) | MIT | dependency; wheel bundled in `site/vendor/` (license inside the wheel) |
 | [Shapely](https://github.com/shapely/shapely) | BSD-3-Clause | dependency (bundles the GEOS library, LGPL-2.1) |
 | [NumPy](https://numpy.org) | BSD-3-Clause | dependency |
-| [trimesh](https://github.com/mikedh/trimesh) | MIT | dependency (command line / local UI) |
-| [mapbox-earcut](https://github.com/skogler/mapbox_earcut_python) | ISC | dependency of trimesh |
-| [three.js](https://threejs.org) | MIT | bundled in `web/vendor/`, see `LICENSE-three.js.txt` |
+| [three.js](https://threejs.org) | MIT | bundled in `site/vendor/`, see `LICENSE-three.js.txt` |
 | [Pyodide](https://pyodide.org) | MPL-2.0 | loaded by the website from the jsDelivr CDN, not redistributed |

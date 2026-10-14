@@ -1,24 +1,26 @@
 #!/usr/bin/env python3
 """
 svg2stl - convert an SVG into one STL per fill color for multi-color 3D printing.
+Runs in the browser with Pyodide (see site/), so it only needs numpy, shapely
+and svgelements.
 
-Each filled shape in the SVG is grouped by its fill color, extruded upwards
-(+Z) by a depth chosen per color, and written to
+Each filled shape in the SVG is grouped by its fill color and extruded upwards
+(+Z) by a depth chosen per color. Two modes build on that:
 
-    <svg folder>/<name>_stl/<name>_<rrggbb>.stl
-
-Optionally a "backplate" (the union of every shape) is extruded downwards
-(-Z) and written as <name>_backplate.stl. All files share the same coordinate
-system, so they line up when imported together into a slicer.
+- Extrude: optionally a "backplate" (the union of every shape) is extruded
+  downwards (-Z). All parts share one coordinate system, so they line up when
+  imported together into a slicer.
+- Stamp: the design is mirrored and sits on a rectangular box with a blind
+  threaded hole in its back; a knob handle with a matching threaded post
+  screws into it.
 """
 
-import argparse
 import math
 import re
 import sys
 import xml.etree.ElementTree as ET
 from collections import OrderedDict
-from pathlib import Path as FsPath
+from dataclasses import dataclass
 
 import numpy as np
 import shapely
@@ -227,21 +229,6 @@ def group_by_color(shapes, occlude):
 # 3D
 # --------------------------------------------------------------------------
 
-def extrude(geom, height, z0):
-    import trimesh  # only the command line / local UI need it
-    parts = []
-    # Near-duplicate / collinear points (left by flattening and boolean ops)
-    # make the cap triangulation leave holes; a 1 micron simplify removes them.
-    for poly in only_polygons(geom.simplify(1e-3)).geoms:
-        poly = shapely.geometry.polygon.orient(poly)
-        mesh = trimesh.creation.extrude_polygon(poly, height)
-        mesh.apply_translation((0, 0, z0))
-        parts.append(mesh)
-    if not parts:
-        return None
-    return trimesh.util.concatenate(parts)
-
-
 def _triangulate(poly):
     """(n, 3, 2) array of counter-clockwise triangles exactly covering poly."""
     tris = [np.asarray(t.exterior.coords)[:3]
@@ -257,27 +244,34 @@ def _triangulate(poly):
 
 def extrude_triangles(geom, height, z0):
     """
-    Extrude without trimesh (used by the browser version): (n, 3, 3) array of
-    outward-facing triangles. Caps and walls share their vertices exactly, so
-    the mesh is closed.
+    Extrude into an (n, 3, 3) array of outward-facing triangles. Caps and
+    walls share their vertices exactly, so the mesh is closed.
     """
     out = []
     z1 = z0 + height
     for poly in only_polygons(geom.simplify(1e-3)).geoms:
         poly = shapely.geometry.polygon.orient(poly)  # outer CCW, holes CW
         caps = _triangulate(poly)
-        n = len(caps)
-        top = np.concatenate([caps, np.full((n, 3, 1), z1)], axis=2)
-        bottom = np.concatenate([caps[:, ::-1], np.full((n, 3, 1), z0)], axis=2)
-        out += [top, bottom]
-        for ring in [poly.exterior, *poly.interiors]:
-            a = np.asarray(ring.coords)[:-1]
-            b = np.roll(a, -1, axis=0)
-            lo = lambda p: np.column_stack([p, np.full(len(p), z0)])
-            hi = lambda p: np.column_stack([p, np.full(len(p), z1)])
-            out.append(np.stack([lo(a), lo(b), hi(b)], axis=1))
-            out.append(np.stack([lo(a), hi(b), hi(a)], axis=1))
+        out += [_at_z(caps, z1), _at_z(caps[:, ::-1], z0), _walls(poly, z0, z1)]
     return np.concatenate(out) if out else np.empty((0, 3, 3))
+
+
+def _at_z(tris, z):
+    """(n, 3, 2) triangles -> (n, 3, 3) at height z."""
+    return np.concatenate([tris, np.full((len(tris), 3, 1), z)], axis=2)
+
+
+def _walls(poly, z0, z1):
+    """Outward-facing side walls of an oriented polygon between z0 and z1."""
+    out = []
+    for ring in [poly.exterior, *poly.interiors]:
+        a = np.asarray(ring.coords)[:-1]
+        b = np.roll(a, -1, axis=0)
+        lo = lambda p: np.column_stack([p, np.full(len(p), z0)])
+        hi = lambda p: np.column_stack([p, np.full(len(p), z1)])
+        out.append(np.stack([lo(a), lo(b), hi(b)], axis=1))
+        out.append(np.stack([lo(a), hi(b), hi(a)], axis=1))
+    return np.concatenate(out)
 
 
 def stl_bytes(triangles):
@@ -351,133 +345,204 @@ def backplate_outline(everything, margin=0.0):
     return only_polygons(outline)
 
 
-def output_dir(svg_file):
-    svg_file = FsPath(svg_file)
-    return svg_file.parent / f"{svg_file.stem}_stl"
-
-
-def write_stls(svg_file, groups, everything, depths, default_depth=1.0,
-               backplate=None, backplate_margin=0.0, log=print):
-    """Extrude and export. Returns the list of written paths."""
-    svg_file = FsPath(svg_file)
-    out_dir = output_dir(svg_file)
-    out_dir.mkdir(exist_ok=True)
-    log(f"Writing to {out_dir}")
-    written = []
-    for color, geom in groups.items():
-        depth = depths.get(color, default_depth)
-        if depth <= 0:
-            log(f"  #{color}: skipped (depth {depth})")
-            continue
-        mesh = extrude(geom, depth, 0.0)
-        target = out_dir / f"{svg_file.stem}_{color}.stl"
-        mesh.export(target)
-        written.append(target)
-        log(f"  {target.name}  ({depth} mm, {len(mesh.faces)} triangles)")
-    if backplate:
-        mesh = extrude(backplate_outline(everything, backplate_margin), backplate, -backplate)
-        target = out_dir / f"{svg_file.stem}_backplate.stl"
-        mesh.export(target)
-        written.append(target)
-        log(f"  {target.name}  ({backplate} mm, {len(mesh.faces)} triangles)")
-    return written
-
-
 # --------------------------------------------------------------------------
-# CLI
+# Stamp: mirrored relief on a box, plus a knob handle that screws into it
 # --------------------------------------------------------------------------
+#
+# Assembled coordinates: relief from Z=0 up, box from Z=-thickness to 0 with
+# a blind threaded hole in its back (centered), handle below the box with its
+# threaded post up inside the hole. The handle STL is exported upright for
+# printing instead: flat top of the knob on the bed, post pointing up.
 
-def parse_depths(items):
-    depths = {}
-    for item in items or []:
-        if "=" not in item:
-            raise SystemExit(f"--depth expects COLOR=MM, got {item!r}")
-        color, value = item.split("=", 1)
-        try:
-            depths[normalize_hex(color)] = float(value)
-        except ValueError as e:
-            raise SystemExit(f"--depth {item!r}: {e}")
-    return depths
-
-
-def ask_float(prompt, default):
-    while True:
-        answer = input(f"{prompt} [{default}]: ").strip()
-        if not answer:
-            return default
-        try:
-            return float(answer)
-        except ValueError:
-            print("  please enter a number")
+@dataclass
+class StampOptions:
+    margin: float = 3.0           # box beyond the design's bounding box
+    corner_radius: float = 2.0
+    box_thickness: float = 10.0
+    knob_diameter: float = 0.0    # 0 = automatic
+    knob_height: float = 30.0     # without the post
+    thread_diameter: float = 16.0
+    thread_pitch: float = 2.0
+    thread_length: float = 8.0    # depth of the hole; the post is 0.5 mm shorter
+    clearance: float = 0.3        # radial play between post and hole
 
 
-def main(argv=None):
-    ap = argparse.ArgumentParser(
-        description="Convert an SVG into per-color STL files for multi-color printing.",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="examples:\n"
-               "  svg2stl logo.svg --list-colors\n"
-               "  svg2stl logo.svg --default-depth 1 --depth ff0000=2 --depth #00f=0.6\n"
-               "  svg2stl logo.svg --interactive --backplate 1.5\n")
-    ap.add_argument("svg", type=FsPath, help="input SVG file")
-    ap.add_argument("-d", "--depth", action="append", metavar="COLOR=MM",
-                    help="extrusion depth for one color, e.g. ff0000=2 (repeatable)")
-    ap.add_argument("--default-depth", type=float, default=1.0, metavar="MM",
-                    help="depth for colors without --depth (default: 1.0)")
-    ap.add_argument("-i", "--interactive", action="store_true",
-                    help="prompt for the depth of each color found")
-    ap.add_argument("-b", "--backplate", type=float, metavar="MM",
-                    help="also create a backplate (union of all shapes) extruded MM downwards")
-    ap.add_argument("--backplate-margin", type=float, default=0.0, metavar="MM",
-                    help="grow the backplate outline by MM (default: 0)")
-    ap.add_argument("-s", "--scale", type=float, default=1.0,
-                    help="scale factor applied to the SVG's physical size (default: 1)")
-    ap.add_argument("--width", type=float, metavar="MM",
-                    help="scale so the overall design is MM wide (overrides --scale)")
-    ap.add_argument("--tolerance", type=float, default=0.05, metavar="MM",
-                    help="max segment length when flattening curves (default: 0.05)")
-    ap.add_argument("--no-occlusion", action="store_true",
-                    help="don't cut shapes hidden under shapes painted on top of them")
-    ap.add_argument("--list-colors", action="store_true",
-                    help="only list the fill colors found and exit")
-    args = ap.parse_args(argv)
-
-    svg_file = args.svg.resolve()
-    if not svg_file.is_file():
-        raise SystemExit(f"file not found: {svg_file}")
-
-    print(f"Reading {svg_file.name} ...")
-    try:
-        groups, everything = prepare(svg_file, args.scale, args.width,
-                                     args.tolerance, not args.no_occlusion)
-    except ValueError as e:
-        raise SystemExit(str(e))
-
-    _, _, maxx, maxy = everything.bounds
-    print(f"Design size: {maxx:.2f} x {maxy:.2f} mm, "
-          f"{len(groups)} color(s):")
-    for color, geom in groups.items():
-        print(f"  #{color}  {len(geom.geoms):4d} region(s)  {geom.area:10.2f} mm^2")
-    if args.list_colors:
-        return 0
-
-    depths = parse_depths(args.depth)
-    unknown = set(depths) - set(groups)
-    for c in sorted(unknown):
-        print(f"  warning: --depth given for #{c}, which is not in the SVG", file=sys.stderr)
-    if args.interactive:
-        print("Enter the extrusion depth (mm) for each color, 0 to skip:")
-        for color in groups:
-            depths[color] = ask_float(f"  #{color}", depths.get(color, args.default_depth))
-        if args.backplate is None:
-            bp = ask_float("  backplate (0 = none)", 0.0)
-            args.backplate = bp if bp > 0 else None
-
-    write_stls(svg_file, groups, everything, depths, args.default_depth,
-               args.backplate, args.backplate_margin)
-    print("Done.")
-    return 0
+THREAD_DEPTH = 0.5    # x pitch, radial depth of the thread profile
+POST_GAP = 0.5        # mm between the post's tip and the bottom of the hole
+HOLE_WALL = 1.0       # mm, minimum material around and above the hole
+POST_FLARE = 0.7      # mm, 45 degree flare at the post's root (the hole's mouth is chamfered to match)
 
 
-if __name__ == "__main__":
-    sys.exit(main())
+def stamp_layout(groups, everything, opts):
+    """
+    Mirror the design left-right (so stamped prints read correctly) and put
+    it on the box. Returns (groups, box_outline) with the box's lower-left
+    corner at the origin.
+    """
+    _, _, w, h = everything.bounds
+    m = max(opts.margin, 0.0)
+    flip = lambda g: shapely.affinity.affine_transform(g, [-1, 0, 0, 1, w + m, m])
+    groups = OrderedDict((c, flip(g)) for c, g in groups.items())
+    W, H = w + 2 * m, h + 2 * m
+    box = shapely.box(0, 0, W, H)
+    r = min(max(opts.corner_radius, 0.0), 0.49 * min(W, H))
+    if r > 0:
+        box = box.buffer(-r, join_style="mitre").buffer(r, quad_segs=8)
+    return groups, box
+
+
+def knob_diameter(opts, box):
+    """The knob's widest diameter: as set, or sized to the box."""
+    if opts.knob_diameter > 0:
+        return opts.knob_diameter
+    minx, miny, maxx, maxy = box.bounds
+    auto = min(max(0.6 * min(maxx - minx, maxy - miny), 30.0), 45.0)
+    return max(auto, _min_knob_diameter(opts))
+
+
+def _min_knob_diameter(opts):
+    # The foot (95% of the knob's radius) and the neck (72%) must both be
+    # well wider than the post, or the knob snaps where the post meets it.
+    major = opts.thread_diameter / 2
+    return 2 * max((major + 3) / 0.95, (major + 2) / 0.72)
+
+
+def check_stamp(opts, box):
+    """Raise ValueError with a readable message if the parts can't be built."""
+    t = opts
+    if t.thread_pitch < 0.5:
+        raise ValueError("thread pitch must be at least 0.5 mm")
+    if t.thread_diameter / 2 - THREAD_DEPTH * t.thread_pitch < 1.5:
+        raise ValueError("thread diameter is too small for its pitch")
+    if t.thread_length < t.thread_pitch + POST_GAP:
+        raise ValueError(f"thread length must be at least {t.thread_pitch + POST_GAP:g} mm")
+    if t.box_thickness < t.thread_length + HOLE_WALL:
+        raise ValueError(f"the box must be at least {t.thread_length + HOLE_WALL:g} mm thick "
+                         f"for a {t.thread_length:g} mm deep thread")
+    if t.knob_height < 5:
+        raise ValueError("the handle must be at least 5 mm tall")
+    if knob_diameter(t, box) < _min_knob_diameter(t) - 1e-9:
+        raise ValueError(f"the knob must be at least {_min_knob_diameter(t):.1f} mm wide "
+                         f"for a {t.thread_diameter:g} mm thread")
+    c = box.centroid
+    hole = shapely.Point(c.x, c.y).buffer(_mouth_radius(t) + HOLE_WALL)
+    if not box.contains(hole):
+        raise ValueError("the box is too small for the thread: increase the margin "
+                         "or reduce the thread diameter")
+
+
+def _mouth_radius(opts):
+    return opts.thread_diameter / 2 + opts.clearance + POST_FLARE + 0.3
+
+
+def _thread_radius(theta, z, major_r, pitch):
+    """
+    Radius of a right-handed trapezoidal thread (60 degree flanks) at angle
+    theta and height z; broadcasts. Post and hole use the same helix.
+    """
+    depth = THREAD_DEPTH * pitch
+    flank = depth * math.tan(math.radians(30)) / pitch
+    crest = 0.125
+    root = 1 - 2 * flank - crest
+    u = np.mod(z / pitch - theta / (2 * math.pi), 1.0)
+    rise = np.interp(u, [0, root, root + flank, root + flank + crest, 1], [0, 0, 1, 1, 0])
+    return major_r - depth + depth * rise
+
+
+def _revolve(r, z, theta, cx=0.0, cy=0.0):
+    """(rows, cols, 3) vertex grid from per-row/col radii and heights."""
+    r = np.broadcast_to(r, (len(z), len(theta)))
+    z = np.broadcast_to(np.asarray(z)[:, None], r.shape)
+    return np.stack([cx + r * np.cos(theta), cy + r * np.sin(theta), z], axis=-1)
+
+
+def _grid_triangles(v):
+    """
+    Triangles of a vertex grid whose columns wrap around (angle). Facing out
+    when rows go along a meridian from the bottom up the outside. Triangles
+    collapsed at a pole (radius 0) are dropped.
+    """
+    a, d = v[:-1], v[1:]
+    b, c = np.roll(a, -1, axis=1), np.roll(d, -1, axis=1)
+    tris = np.concatenate([np.stack([a, b, c], axis=-2).reshape(-1, 3, 3),
+                           np.stack([a, c, d], axis=-2).reshape(-1, 3, 3)])
+    area = np.linalg.norm(np.cross(tris[:, 1] - tris[:, 0], tris[:, 2] - tris[:, 0]), axis=1)
+    return tris[area > 1e-12]
+
+
+def _rows(z0, z1, step):
+    n = max(2, int(math.ceil(abs(z1 - z0) / step)) + 1)
+    return np.linspace(z0, z1, n)
+
+
+def box_triangles(box, opts, segments=128, rows_per_pitch=24):
+    """The stamp's box with its blind threaded hole, as one closed mesh."""
+    t = opts
+    z0, z1 = -t.box_thickness, 0.0
+    poly = shapely.geometry.polygon.orient(box.simplify(1e-3))
+    c = box.centroid
+    theta = np.linspace(0, 2 * math.pi, segments, endpoint=False)
+
+    # Hole wall from the mouth (chamfered out to mouth_r, which the bottom
+    # face's hole ring matches exactly) up to a plain ring at the floor.
+    floor = z0 + t.thread_length
+    z = _rows(z0, floor, t.thread_pitch / rows_per_pitch)
+    major = t.thread_diameter / 2 + t.clearance
+    mouth_r = _mouth_radius(t)
+    r = _thread_radius(theta, z[:, None], major, t.thread_pitch)
+    r = np.maximum(r, mouth_r - (z[:, None] - z0))        # 45 degree chamfer at the mouth
+    r = np.maximum(r, major - (floor - z[:, None]))       # run out into the floor
+    r = np.vstack([r, np.zeros((1, segments))])            # floor, closed at the axis
+    hole = _revolve(r, np.append(z, floor), theta, c.x, c.y)
+    hole_tris = _grid_triangles(hole)[:, ::-1]             # faces into the hole
+
+    ring = hole[0, :, :2]
+    back = shapely.geometry.polygon.orient(Polygon(poly.exterior.coords, [ring]))
+    back_tris = _triangulate(back)[:, ::-1]
+    return np.concatenate([_at_z(_triangulate(poly), z1), _at_z(back_tris, z0),
+                           _walls(poly, z0, z1), hole_tris])
+
+
+def _catmull_rom(points, per_segment=8):
+    p = np.asarray(points, dtype=float)
+    p = np.vstack([2 * p[0] - p[1], p, 2 * p[-1] - p[-2]])
+    out = []
+    for i in range(1, len(p) - 2):
+        s = np.linspace(0, 1, per_segment, endpoint=False)[:, None]
+        p0, p1, p2, p3 = p[i - 1], p[i], p[i + 1], p[i + 2]
+        out.append(0.5 * (2 * p1 + (p2 - p0) * s + (2 * p0 - 5 * p1 + 4 * p2 - p3) * s ** 2
+                          + (3 * p1 - p0 - 3 * p2 + p3) * s ** 3))
+    out.append(p[-2:-1])
+    return np.vstack(out)
+
+
+def handle_triangles(opts, diameter, segments=128, rows_per_pitch=24):
+    """
+    The knob with its threaded post, upright for printing: flat top of the
+    knob on Z=0, post pointing up, centered on the Z axis.
+    """
+    t = opts
+    R, H = diameter / 2, t.knob_height
+    theta = np.linspace(0, 2 * math.pi, segments, endpoint=False)
+    # Knob profile as (radius, height) from the flat top on the bed up to the
+    # foot that sits against the box: bulb, neck, flared foot.
+    profile = _catmull_rom([(0.75 * R, 0), (0.95 * R, 0.08 * H), (R, 0.2 * H), (0.9 * R, 0.35 * H),
+                            (0.72 * R, 0.55 * H), (0.78 * R, 0.8 * H), (0.95 * R, H)])
+    rows_r = [np.zeros(segments)] + [np.full(segments, r) for r, _ in profile]
+    rows_z = [0.0] + [z for _, z in profile]
+
+    major = t.thread_diameter / 2
+    length = t.thread_length - POST_GAP
+    tip_r = major - THREAD_DEPTH * t.thread_pitch - 0.5
+    z = _rows(H, H + length, t.thread_pitch / rows_per_pitch)
+    r = _thread_radius(theta, z[:, None], major, t.thread_pitch)
+    r = np.maximum(r, major + POST_FLARE - (z[:, None] - H))  # flared root, against snapping
+    r = np.minimum(r, tip_r + (H + length - z[:, None]))   # 45 degree chamfer at the tip
+    rows_r += list(r) + [np.zeros(segments)]
+    rows_z += list(z) + [H + length]
+    return _grid_triangles(_revolve(np.array(rows_r), rows_z, theta))
+
+
+def mesh_json(triangles, digits=3):
+    """Flat vertex list for the 3D preview."""
+    return np.round(np.asarray(triangles, dtype=float).reshape(-1), digits).tolist()
