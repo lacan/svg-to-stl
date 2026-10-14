@@ -198,10 +198,10 @@
 
     <section>
       <h2>Colors <span class="row" style="gap:4px">
-        <input id="allDepth" type="number" min="0" step="0.1" value="1" style="width:62px" title="Depth for all colors">
+        <input id="allDepth" type="number" step="0.1" value="1" style="width:62px" title="Depth for all colors">
         <button id="applyAll" title="Set this depth for every color">Set all</button></span></h2>
       <div id="colors"><p class="hint">Load an SVG to see its fill colors.</p></div>
-      <p class="hint" data-show="stamp" style="word-break:normal" hidden>Relief height per color. Set the background to 0 so only the design stands out.</p>
+      <p class="hint" data-show="stamp" style="word-break:normal" hidden>Relief height per color; a negative depth engraves that color into the box instead. Set the background to 0 so only the design stands out.</p>
     </section>
 
     <section data-show="extrude">
@@ -269,7 +269,7 @@
           <li>Clipping paths and masks are not applied; release or apply them in your editor first.</li>
           <li>Gradients use the color of their first stop.</li>
           <li>Size comes from the SVG's physical size (mm, cm, in; px at 96 dpi), or set a width.</li>
-          <li>Stamp: the relief and box come as one STL. Print it relief up and sand the relief flat. Print the handle separately and screw it in.</li>
+          <li>Stamp: the relief and box come as one STL. Print it relief up and sand the relief flat. Negative depths engrave the design into the box for a negative stamp. Print the handle separately and screw it in.</li>
         </ul>
       </details>
     </section>
@@ -310,10 +310,15 @@ const state = {
   mode: "extrude",       // "extrude" | "stamp"
   data: null,            // last load result
   file: null,            // {name, size, text} of the chosen SVG
-  depths: {},            // hex -> mm
+  depths: {},            // hex -> mm; negative = engraved into the stamp's box
   visible: {},           // hex -> bool
   meshes: {},            // hex -> THREE.Group (mesh + edges), also "backplate", "box", "handle"
+  colorsKey: "",         // mode and colors the depth rows were rendered for
 };
+// Extrude parts only go up; a stamp's colors can also be cut into its box.
+const minDepth = () => state.mode === "stamp" ? -Infinity : 0;
+// The box mesh comes from Python, so engraved depths need a reload to preview.
+const engraved = () => Object.fromEntries(Object.entries(state.depths).filter(([, v]) => v < 0));
 // Stamp inputs, tagged with their svg2stl.StampOptions field (data-stamp).
 // Their defaults come from Python once the converter is ready; an empty
 // input means "use the default".
@@ -460,9 +465,12 @@ function applyPreview() {
     const g = state.meshes[c.hex];
     if (!g) return;
     const depth = state.depths[c.hex] ?? 0;
-    g.visible = state.visible[c.hex] !== false && depth > 0;
-    g.scale.z = Math.max(depth, 1e-4);
-    g.position.z = gap * (i + 1);
+    // An engraved color's pocket is part of the box mesh; a thin colored
+    // skin on the pocket floor shows (and toggles, highlights) the color.
+    const sunk = d.mode === "stamp" && depth < 0;
+    g.visible = state.visible[c.hex] !== false && (depth > 0 || sunk);
+    g.scale.z = sunk ? 0.02 : Math.max(depth, 1e-4);
+    g.position.z = sunk ? depth + 0.01 : gap * (i + 1);
     g.userData.edges.visible = showEdges;
     if (g.visible) top = Math.max(top, depth + g.position.z);
   });
@@ -534,8 +542,14 @@ document.querySelectorAll("[data-view]").forEach((b) => b.addEventListener("clic
 
 // ---------------------------------------------------------------- UI
 function renderColors() {
+  // Re-rendering while a depth is being typed would steal the focus.
+  const key = state.mode + ":" + state.data.colors.map((c) => c.hex).join();
+  if (key === state.colorsKey) return;
+  state.colorsKey = key;
   const box = $("colors");
   box.innerHTML = "";
+  const stamp = state.mode === "stamp";
+  const lo = stamp ? -10 : 0;
   for (const c of state.data.colors) {
     const row = document.createElement("div");
     row.className = "color";
@@ -544,16 +558,19 @@ function renderColors() {
       <div class="sw" style="background:#${c.hex}"></div>
       <div><div class="name">#${c.hex}</div>
         <div class="meta">${c.regions} region${c.regions === 1 ? "" : "s"} · ${fmt(c.area)} mm²</div></div>
-      <div class="unit" data-unit="mm"><input type="number" min="0" step="0.1" value="${state.depths[c.hex]}"></div>
-      <input type="range" min="0" max="10" step="0.1" value="${Math.min(state.depths[c.hex], 10)}">`;
+      <div class="unit" data-unit="mm"><input type="number" ${stamp ? "" : 'min="0"'} step="0.1"
+        value="${Math.max(state.depths[c.hex], lo)}"></div>
+      <input type="range" min="${lo}" max="10" step="0.1" value="${Math.min(Math.max(state.depths[c.hex], lo), 10)}">`;
     const [vis, num, range] = row.querySelectorAll("input");
     const set = (v, from) => {
-      v = Math.max(0, +v || 0);
+      v = Math.max(minDepth(), +v || 0);
+      const before = JSON.stringify(engraved());
       state.depths[c.hex] = v;
       if (from !== num) num.value = v;
-      if (from !== range) range.value = Math.min(v, 10);
-      row.classList.toggle("zero", v === 0);
+      if (from !== range) range.value = Math.min(Math.max(v, lo), 10);
+      row.classList.toggle("zero", v <= 0 && !stamp || v === 0);
       applyPreview(); saveSettings();
+      if (stamp && JSON.stringify(engraved()) !== before) reloadSoon();
     };
     num.addEventListener("input", () => set(num.value, num));
     range.addEventListener("input", () => set(range.value, range));
@@ -564,7 +581,7 @@ function renderColors() {
     });
     row.addEventListener("mouseenter", () => highlight(c.hex, true));
     row.addEventListener("mouseleave", () => highlight(c.hex, false));
-    row.classList.toggle("zero", state.depths[c.hex] === 0);
+    row.classList.toggle("zero", stamp ? state.depths[c.hex] === 0 : state.depths[c.hex] <= 0);
     row.classList.toggle("off", state.visible[c.hex] === false);
     box.appendChild(row);
   }
@@ -581,7 +598,8 @@ function updateExportLabel() {
   const d = state.data;
   const btn = $("export");
   if (!d) { btn.disabled = true; btn.textContent = "Download STL files"; return; }
-  const colors = d.colors.filter((c) => (state.depths[c.hex] || 0) > 0).length;
+  const used = (c) => d.mode === "stamp" ? !!state.depths[c.hex] : state.depths[c.hex] > 0;
+  const colors = d.colors.filter(used).length;
   const n = d.mode === "stamp" ? (colors ? 2 : 0)   // relief + box in one file, handle
           : colors + ($("bpOn").checked && +$("bpDepth").value > 0 ? 1 : 0);
   btn.disabled = n === 0;
@@ -645,6 +663,7 @@ function geometryRequest() {
     margin: +$("bpMargin").value || 0,
     mode: state.mode,
     stamp: stampValues(),
+    depths: state.mode === "stamp" ? engraved() : {},
   };
 }
 
@@ -693,7 +712,7 @@ async function openFile(file) {
   }
   const text = await file.text();
   state.file = { name: file.name, size: file.size, text };
-  state.data = null; state.depths = {}; state.visible = {};
+  state.data = null; state.depths = {}; state.visible = {}; state.colorsKey = "";
   const s = loadSettings(fileKey());
   if (s) {
     for (const k of ["width", "scale", "tolerance", "bpDepth", "bpMargin"]) if (s[k] != null) $(k).value = s[k];
@@ -731,9 +750,12 @@ for (const id of ["bpOn", "bpDepth", "explode", "edges"])
   $(id).addEventListener("input", () => { applyPreview(); saveSettings(); });
 $("applyAll").addEventListener("click", () => {
   if (!state.data) return;
-  const v = Math.max(0, +$("allDepth").value || 0);
+  const v = Math.max(minDepth(), +$("allDepth").value || 0);
+  const before = JSON.stringify(engraved());
   for (const c of state.data.colors) state.depths[c.hex] = v;
+  state.colorsKey = "";
   renderColors(); applyPreview(); saveSettings();
+  if (state.mode === "stamp" && JSON.stringify(engraved()) !== before) reloadSoon();
 });
 
 $("export").addEventListener("click", async () => {

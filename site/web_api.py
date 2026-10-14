@@ -5,6 +5,7 @@ a ZIP of STL files.
 
 Every request has "mode": "extrude" (per-color parts + optional backplate) or
 "stamp" (mirrored relief merged with its box + screw-on handle, see svg2stl).
+In stamp mode, colors with a negative depth are engraved into the box.
 """
 
 import contextlib
@@ -67,15 +68,24 @@ def stamp_defaults():
     return json.dumps({f.name: f.default for f in fields(svg2stl.StampOptions)})
 
 
+def _depths(req):
+    return {svg2stl.normalize_hex(c): float(d) for c, d in (req.get("depths") or {}).items()}
+
+
 def _stamp(req, groups, everything, warnings):
-    """Stamp mode: (mirrored groups, box outline, options, knob diameter)."""
+    """
+    Stamp mode: (mirrored groups, box outline, options, knob diameter,
+    pockets), pockets being the (depth, geometry) engraved into the box.
+    """
     given = req.get("stamp") or {}
     opts = svg2stl.StampOptions(**{f.name: float(given[f.name]) for f in fields(svg2stl.StampOptions)
                                    if given.get(f.name) not in (None, "")})
     groups, box = svg2stl.stamp_layout(groups, everything, opts)
-    knob, stamp_warnings = svg2stl.check_stamp(opts, box)
+    depths = _depths(req)
+    pockets = [(-depths[c], g) for c, g in groups.items() if depths.get(c, 0.0) < 0]
+    knob, stamp_warnings = svg2stl.check_stamp(opts, box, max((d for d, _ in pockets), default=0.0))
     warnings.extend(stamp_warnings)
-    return groups, box, opts, knob
+    return groups, box, opts, knob, pockets
 
 
 def _reply(fn):
@@ -93,7 +103,7 @@ def load(req_json):
         groups, everything = _geometry(req, warnings)
         result = {"name": _svg["name"], "warnings": warnings, "mode": "extrude"}
         if req.get("mode") == "stamp":
-            groups, box, opts, knob = _stamp(req, groups, everything, warnings)
+            groups, box, opts, knob, pockets = _stamp(req, groups, everything, warnings)
             minx, miny, maxx, maxy = box.bounds
             c = box.centroid
             # Coarser threads for the preview keep it fast; the export uses full detail.
@@ -102,7 +112,7 @@ def load(req_json):
             result.update({
                 "mode": "stamp",
                 "size": [maxx - minx, maxy - miny],
-                "box": svg2stl.mesh_json(svg2stl.box_triangles(box, opts, segments=48, rows_per_pitch=6)),
+                "box": svg2stl.mesh_json(svg2stl.box_triangles(box, opts, pockets, segments=48, rows_per_pitch=6)),
                 "handle": svg2stl.mesh_json(handle),
                 "boxThickness": opts.box_thickness,
                 "knobHeight": opts.knob_height,
@@ -128,8 +138,8 @@ def export(req_json):
         groups, everything = _geometry(req, [])
         stamp = req.get("mode") == "stamp"
         if stamp:
-            groups, box, opts, knob = _stamp(req, groups, everything, [])
-        depths = {svg2stl.normalize_hex(c): float(d) for c, d in req.get("depths", {}).items()}
+            groups, box, opts, knob, pockets = _stamp(req, groups, everything, [])
+        depths = _depths(req)
         stem = _svg["name"]
         parts = []  # (file name, triangles)
         if stamp:
@@ -139,8 +149,9 @@ def export(req_json):
             sink = svg2stl.RELIEF_SINK
             relief = [svg2stl.extrude_triangles(geom, depths[color] + sink, -sink)
                       for color, geom in groups.items() if depths.get(color, 0.0) > 0]
-            if relief:
-                parts.append((f"{stem}_stamp.stl", np.concatenate([*relief, svg2stl.box_triangles(box, opts)])))
+            if relief or pockets:
+                parts.append((f"{stem}_stamp.stl",
+                              np.concatenate([*relief, svg2stl.box_triangles(box, opts, pockets)])))
                 parts.append((f"{stem}_handle.stl", svg2stl.handle_triangles(opts, knob)))
         else:
             for color, geom in groups.items():

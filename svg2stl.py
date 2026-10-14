@@ -11,7 +11,8 @@ Each filled shape in the SVG is grouped by its fill color and extruded upwards
   imported together into a slicer.
 - Stamp: the design is mirrored and sits on a rectangular box with a blind
   threaded hole in its back; a knob handle with a matching threaded post
-  screws into it.
+  screws into it. Colors with a negative depth are cut into the box instead
+  (engraved), so the stamp can print the design or its negative.
 """
 
 import math
@@ -414,11 +415,12 @@ def _min_knob_diameter(opts):
     return 2 * max((major + 3) / 0.95, (major + 2) / 0.72)
 
 
-def check_stamp(opts, box):
+def check_stamp(opts, box, engrave=0.0):
     """
     Raise ValueError with a readable message if the parts can't be built.
-    Returns (knob diameter, warnings) for parts that can be built but are
-    probably not what was intended.
+    `engrave` is the deepest pocket cut into the box's top. Returns (knob
+    diameter, warnings) for parts that can be built but are probably not
+    what was intended.
     """
     if opts.thread_pitch < 0.5:
         raise ValueError("thread pitch must be at least 0.5 mm")
@@ -429,6 +431,9 @@ def check_stamp(opts, box):
     if opts.box_thickness < opts.thread_length + HOLE_WALL:
         raise ValueError(f"the box must be at least {opts.thread_length + HOLE_WALL:g} mm thick "
                          f"for a {opts.thread_length:g} mm deep thread")
+    if engrave > 0 and opts.box_thickness < opts.thread_length + HOLE_WALL + engrave:
+        raise ValueError(f"the box must be at least {opts.thread_length + HOLE_WALL + engrave:g} mm thick "
+                         f"for {engrave:g} mm deep engraving above a {opts.thread_length:g} mm deep thread")
     if opts.knob_height < 5:
         raise ValueError("the handle must be at least 5 mm tall")
     knob, min_knob = knob_diameter(opts, box), _min_knob_diameter(opts)
@@ -491,8 +496,38 @@ def _rows(z0, z1, step):
     return np.linspace(z0, z1, n)
 
 
-def box_triangles(box, opts, segments=128, rows_per_pitch=24):
-    """The stamp's box with its blind threaded hole, as one closed mesh."""
+def _pocket_top(box, pockets):
+    """
+    The box's top face with pockets cut into it, as triangles. `pockets` is a
+    list of (depth, geometry) with depth > 0. Pockets of different depths are
+    stepped: each depth level gets a floor and walls up to the level above.
+    """
+    levels = sorted({d for d, _ in pockets})
+    # Region deeper than or as deep as each level; adjacent colors' hairline
+    # gaps are closed so no paper-thin walls stand between them.
+    regions = [backplate_outline(unary_union([g for d, g in pockets if d >= level]))
+               .intersection(box) for level in levels]
+    regions = [only_polygons(r) for r in regions]
+    out = []
+    face = lambda geom, z: [_at_z(_triangulate(shapely.geometry.polygon.orient(p)), z)
+                            for p in only_polygons(geom.simplify(1e-3)).geoms]
+    out += face(box.difference(regions[0]), 0.0)
+    above = 0.0
+    for i, (level, region) in enumerate(zip(levels, regions)):
+        deeper = regions[i + 1] if i + 1 < len(regions) else Polygon()
+        out += face(region.difference(deeper), -level)
+        for poly in only_polygons(region.simplify(1e-3)).geoms:
+            poly = shapely.geometry.polygon.orient(poly)
+            out.append(_walls(poly, -level, -above)[:, ::-1])  # face into the pocket
+        above = level
+    return np.concatenate(out)
+
+
+def box_triangles(box, opts, pockets=(), segments=128, rows_per_pitch=24):
+    """
+    The stamp's box with its blind threaded hole, as one closed mesh.
+    `pockets` (see _pocket_top) are engraved into its top.
+    """
     z0, z1 = -opts.box_thickness, 0.0
     poly = shapely.geometry.polygon.orient(box.simplify(1e-3))
     c = box.centroid
@@ -514,8 +549,9 @@ def box_triangles(box, opts, segments=128, rows_per_pitch=24):
     ring = hole[0, :, :2]
     back = shapely.geometry.polygon.orient(Polygon(poly.exterior.coords, [ring]))
     back_tris = _triangulate(back)[:, ::-1]
-    return np.concatenate([_at_z(_triangulate(poly), z1), _at_z(back_tris, z0),
-                           _walls(poly, z0, z1), hole_tris])
+    pockets = [(d, g) for d, g in pockets if d > 0 and not g.is_empty]
+    top = _pocket_top(box, pockets) if pockets else _at_z(_triangulate(poly), z1)
+    return np.concatenate([top, _at_z(back_tris, z0), _walls(poly, z0, z1), hole_tris])
 
 
 def _catmull_rom(points, per_segment=8):

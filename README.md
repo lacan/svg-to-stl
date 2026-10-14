@@ -22,9 +22,12 @@ The left panel has two tabs:
 - **Stamp**: makes a rubber-stamp style print in two files:
   - `<name>_stamp.stl`: the relief on its box, as one object. The relief is
     the design mirrored left-right so the stamped print reads correctly; each
-    color keeps its own height, so set the background color(s) to 0. The box
-    is the design's bounding box plus a margin (optionally rounded), with a
-    blind threaded hole in its back.
+    color keeps its own height, so set the background color(s) to 0. A
+    negative height engraves that color into the box instead, which stamps
+    the design as a negative (and colors can mix raised and engraved). The
+    box is the design's bounding box plus a margin (optionally rounded), with
+    a blind threaded hole in its back; engraving makes it need to be thicker
+    by the engraving depth.
   - `<name>_handle.stl`: a knob (30 mm tall by default) with a matching
     threaded post, exported upright for printing (flat top on the bed, post
     up, no supports needed).
