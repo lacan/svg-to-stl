@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 svg2stl - convert an SVG into one STL per fill color for multi-color 3D printing.
 Runs in the browser with Pyodide (see site/), so it only needs numpy, shapely
@@ -263,12 +262,12 @@ def _at_z(tris, z):
 
 def _walls(poly, z0, z1):
     """Outward-facing side walls of an oriented polygon between z0 and z1."""
+    lo = lambda p: np.column_stack([p, np.full(len(p), z0)])
+    hi = lambda p: np.column_stack([p, np.full(len(p), z1)])
     out = []
     for ring in [poly.exterior, *poly.interiors]:
         a = np.asarray(ring.coords)[:-1]
         b = np.roll(a, -1, axis=0)
-        lo = lambda p: np.column_stack([p, np.full(len(p), z0)])
-        hi = lambda p: np.column_stack([p, np.full(len(p), z1)])
         out.append(np.stack([lo(a), lo(b), hi(b)], axis=1))
         out.append(np.stack([lo(a), hi(b), hi(a)], axis=1))
     return np.concatenate(out)
@@ -308,7 +307,7 @@ def polygons_json(multipolygon):
 
 
 # --------------------------------------------------------------------------
-# Pipeline (shared by the CLI and the web UI)
+# Pipeline
 # --------------------------------------------------------------------------
 
 def prepare(svg_file, scale=1.0, width=None, tolerance=0.05, occlude=True, shapes=None):
@@ -386,18 +385,25 @@ def stamp_layout(groups, everything, opts):
     groups = OrderedDict((c, flip(g)) for c, g in groups.items())
     W, H = w + 2 * m, h + 2 * m
     box = shapely.box(0, 0, W, H)
-    r = min(max(opts.corner_radius, 0.0), 0.49 * min(W, H))
+    # A rounded corner stays clear of the design's bounding box only while
+    # r <= m / (1 - 1/sqrt(2)); larger radii would cut into the relief.
+    r = min(max(opts.corner_radius, 0.0), m / (1 - math.sqrt(0.5)), 0.49 * min(W, H))
     if r > 0:
         box = box.buffer(-r, join_style="mitre").buffer(r, quad_segs=8)
     return groups, box
 
 
+def _box_short_side(box):
+    minx, miny, maxx, maxy = box.bounds
+    return min(maxx - minx, maxy - miny)
+
+
 def knob_diameter(opts, box):
-    """The knob's widest diameter: as set, or sized to the box."""
+    """The knob's widest diameter: as set, or sized to the box (never wider)."""
     if opts.knob_diameter > 0:
         return opts.knob_diameter
-    minx, miny, maxx, maxy = box.bounds
-    auto = min(max(0.6 * min(maxx - minx, maxy - miny), 30.0), 45.0)
+    short = _box_short_side(box)
+    auto = min(max(0.6 * short, 30.0), 45.0, short)
     return max(auto, _min_knob_diameter(opts))
 
 
@@ -409,27 +415,36 @@ def _min_knob_diameter(opts):
 
 
 def check_stamp(opts, box):
-    """Raise ValueError with a readable message if the parts can't be built."""
-    t = opts
-    if t.thread_pitch < 0.5:
+    """
+    Raise ValueError with a readable message if the parts can't be built.
+    Returns (knob diameter, warnings) for parts that can be built but are
+    probably not what was intended.
+    """
+    if opts.thread_pitch < 0.5:
         raise ValueError("thread pitch must be at least 0.5 mm")
-    if t.thread_diameter / 2 - THREAD_DEPTH * t.thread_pitch < 1.5:
+    if opts.thread_diameter / 2 - THREAD_DEPTH * opts.thread_pitch < 1.5:
         raise ValueError("thread diameter is too small for its pitch")
-    if t.thread_length < t.thread_pitch + POST_GAP:
-        raise ValueError(f"thread length must be at least {t.thread_pitch + POST_GAP:g} mm")
-    if t.box_thickness < t.thread_length + HOLE_WALL:
-        raise ValueError(f"the box must be at least {t.thread_length + HOLE_WALL:g} mm thick "
-                         f"for a {t.thread_length:g} mm deep thread")
-    if t.knob_height < 5:
+    if opts.thread_length < opts.thread_pitch + POST_GAP:
+        raise ValueError(f"thread length must be at least {opts.thread_pitch + POST_GAP:g} mm")
+    if opts.box_thickness < opts.thread_length + HOLE_WALL:
+        raise ValueError(f"the box must be at least {opts.thread_length + HOLE_WALL:g} mm thick "
+                         f"for a {opts.thread_length:g} mm deep thread")
+    if opts.knob_height < 5:
         raise ValueError("the handle must be at least 5 mm tall")
-    if knob_diameter(t, box) < _min_knob_diameter(t) - 1e-9:
-        raise ValueError(f"the knob must be at least {_min_knob_diameter(t):.1f} mm wide "
-                         f"for a {t.thread_diameter:g} mm thread")
+    knob, min_knob = knob_diameter(opts, box), _min_knob_diameter(opts)
+    if knob < min_knob - 1e-9:
+        raise ValueError(f"the knob must be at least {min_knob:.1f} mm wide "
+                         f"for a {opts.thread_diameter:g} mm thread")
     c = box.centroid
-    hole = shapely.Point(c.x, c.y).buffer(_mouth_radius(t) + HOLE_WALL)
+    hole = shapely.Point(c.x, c.y).buffer(_mouth_radius(opts) + HOLE_WALL)
     if not box.contains(hole):
         raise ValueError("the box is too small for the thread: increase the margin "
                          "or reduce the thread diameter")
+    warnings = []
+    if knob > _box_short_side(box) + 1e-9:
+        warnings.append(f"the {knob:.1f} mm knob is wider than the box, so the stamp will be "
+                        "top-heavy; increase the margin, or reduce the knob or thread diameter")
+    return knob, warnings
 
 
 def _mouth_radius(opts):
@@ -478,19 +493,18 @@ def _rows(z0, z1, step):
 
 def box_triangles(box, opts, segments=128, rows_per_pitch=24):
     """The stamp's box with its blind threaded hole, as one closed mesh."""
-    t = opts
-    z0, z1 = -t.box_thickness, 0.0
+    z0, z1 = -opts.box_thickness, 0.0
     poly = shapely.geometry.polygon.orient(box.simplify(1e-3))
     c = box.centroid
     theta = np.linspace(0, 2 * math.pi, segments, endpoint=False)
 
     # Hole wall from the mouth (chamfered out to mouth_r, which the bottom
     # face's hole ring matches exactly) up to a plain ring at the floor.
-    floor = z0 + t.thread_length
-    z = _rows(z0, floor, t.thread_pitch / rows_per_pitch)
-    major = t.thread_diameter / 2 + t.clearance
-    mouth_r = _mouth_radius(t)
-    r = _thread_radius(theta, z[:, None], major, t.thread_pitch)
+    floor = z0 + opts.thread_length
+    z = _rows(z0, floor, opts.thread_pitch / rows_per_pitch)
+    major = opts.thread_diameter / 2 + opts.clearance
+    mouth_r = _mouth_radius(opts)
+    r = _thread_radius(theta, z[:, None], major, opts.thread_pitch)
     r = np.maximum(r, mouth_r - (z[:, None] - z0))        # 45 degree chamfer at the mouth
     r = np.maximum(r, major - (floor - z[:, None]))       # run out into the floor
     r = np.vstack([r, np.zeros((1, segments))])            # floor, closed at the axis
@@ -507,9 +521,9 @@ def box_triangles(box, opts, segments=128, rows_per_pitch=24):
 def _catmull_rom(points, per_segment=8):
     p = np.asarray(points, dtype=float)
     p = np.vstack([2 * p[0] - p[1], p, 2 * p[-1] - p[-2]])
+    s = np.linspace(0, 1, per_segment, endpoint=False)[:, None]
     out = []
     for i in range(1, len(p) - 2):
-        s = np.linspace(0, 1, per_segment, endpoint=False)[:, None]
         p0, p1, p2, p3 = p[i - 1], p[i], p[i + 1], p[i + 2]
         out.append(0.5 * (2 * p1 + (p2 - p0) * s + (2 * p0 - 5 * p1 + 4 * p2 - p3) * s ** 2
                           + (3 * p1 - p0 - 3 * p2 + p3) * s ** 3))
@@ -522,8 +536,7 @@ def handle_triangles(opts, diameter, segments=128, rows_per_pitch=24):
     The knob with its threaded post, upright for printing: flat top of the
     knob on Z=0, post pointing up, centered on the Z axis.
     """
-    t = opts
-    R, H = diameter / 2, t.knob_height
+    R, H = diameter / 2, opts.knob_height
     theta = np.linspace(0, 2 * math.pi, segments, endpoint=False)
     # Knob profile as (radius, height) from the flat top on the bed up to the
     # foot that sits against the box: bulb, neck, flared foot.
@@ -532,11 +545,11 @@ def handle_triangles(opts, diameter, segments=128, rows_per_pitch=24):
     rows_r = [np.zeros(segments)] + [np.full(segments, r) for r, _ in profile]
     rows_z = [0.0] + [z for _, z in profile]
 
-    major = t.thread_diameter / 2
-    length = t.thread_length - POST_GAP
-    tip_r = major - THREAD_DEPTH * t.thread_pitch - 0.5
-    z = _rows(H, H + length, t.thread_pitch / rows_per_pitch)
-    r = _thread_radius(theta, z[:, None], major, t.thread_pitch)
+    major = opts.thread_diameter / 2
+    length = opts.thread_length - POST_GAP
+    tip_r = major - THREAD_DEPTH * opts.thread_pitch - 0.5
+    z = _rows(H, H + length, opts.thread_pitch / rows_per_pitch)
+    r = _thread_radius(theta, z[:, None], major, opts.thread_pitch)
     r = np.maximum(r, major + POST_FLARE - (z[:, None] - H))  # flared root, against snapping
     r = np.minimum(r, tip_r + (H + length - z[:, None]))   # 45 degree chamfer at the tip
     rows_r += list(r) + [np.zeros(segments)]

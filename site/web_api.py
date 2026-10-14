@@ -62,14 +62,20 @@ def _geometry(req, warnings):
     return svg2stl.prepare(INPUT, scale, width, tolerance, occlude, shapes)
 
 
-def _stamp(req, groups, everything):
+def stamp_defaults():
+    """StampOptions defaults as JSON, so the page's inputs have one source of truth."""
+    return json.dumps({f.name: f.default for f in fields(svg2stl.StampOptions)})
+
+
+def _stamp(req, groups, everything, warnings):
     """Stamp mode: (mirrored groups, box outline, options, knob diameter)."""
     given = req.get("stamp") or {}
     opts = svg2stl.StampOptions(**{f.name: float(given[f.name]) for f in fields(svg2stl.StampOptions)
                                    if given.get(f.name) not in (None, "")})
     groups, box = svg2stl.stamp_layout(groups, everything, opts)
-    svg2stl.check_stamp(opts, box)
-    return groups, box, opts, svg2stl.knob_diameter(opts, box)
+    knob, stamp_warnings = svg2stl.check_stamp(opts, box)
+    warnings.extend(stamp_warnings)
+    return groups, box, opts, knob
 
 
 def _reply(fn):
@@ -87,7 +93,7 @@ def load(req_json):
         groups, everything = _geometry(req, warnings)
         result = {"name": _svg["name"], "warnings": warnings, "mode": "extrude"}
         if req.get("mode") == "stamp":
-            groups, box, opts, knob = _stamp(req, groups, everything)
+            groups, box, opts, knob = _stamp(req, groups, everything, warnings)
             minx, miny, maxx, maxy = box.bounds
             c = box.centroid
             # Coarser threads for the preview keep it fast; the export uses full detail.
@@ -122,7 +128,7 @@ def export(req_json):
         groups, everything = _geometry(req, [])
         stamp = req.get("mode") == "stamp"
         if stamp:
-            groups, box, opts, knob = _stamp(req, groups, everything)
+            groups, box, opts, knob = _stamp(req, groups, everything, [])
         depths = {svg2stl.normalize_hex(c): float(d) for c, d in req.get("depths", {}).items()}
         stem = _svg["name"]
         parts = []  # (file name, triangles)

@@ -235,11 +235,11 @@
       <h2>Stamp box</h2>
       <div class="grid2">
         <div class="field"><label for="stMargin">Margin</label>
-          <div class="unit" data-unit="mm"><input id="stMargin" type="number" min="0" step="0.5" value="3"></div></div>
+          <div class="unit" data-unit="mm"><input id="stMargin" data-stamp="margin" type="number" min="0" step="0.5"></div></div>
         <div class="field"><label for="stRadius">Corner radius</label>
-          <div class="unit" data-unit="mm"><input id="stRadius" type="number" min="0" step="0.5" value="2"></div></div>
+          <div class="unit" data-unit="mm"><input id="stRadius" data-stamp="corner_radius" type="number" min="0" step="0.5"></div></div>
         <div class="field"><label for="stThick">Thickness</label>
-          <div class="unit" data-unit="mm"><input id="stThick" type="number" min="1" step="0.5" value="10"></div></div>
+          <div class="unit" data-unit="mm"><input id="stThick" data-stamp="box_thickness" type="number" min="0" step="0.5"></div></div>
       </div>
       <p class="hint" style="word-break:normal">The design is mirrored so prints read correctly. The box gets a threaded hole in its back.</p>
     </section>
@@ -248,17 +248,17 @@
       <h2>Handle &amp; thread</h2>
       <div class="grid2">
         <div class="field"><label for="knobDia">Knob diameter</label>
-          <div class="unit" data-unit="mm"><input id="knobDia" type="number" min="0" step="1" placeholder="auto"></div></div>
+          <div class="unit" data-unit="mm"><input id="knobDia" data-stamp="knob_diameter" type="number" min="0" step="1" placeholder="auto"></div></div>
         <div class="field"><label for="knobH">Knob height</label>
-          <div class="unit" data-unit="mm"><input id="knobH" type="number" min="5" step="1" value="30"></div></div>
+          <div class="unit" data-unit="mm"><input id="knobH" data-stamp="knob_height" type="number" min="0" step="1"></div></div>
         <div class="field"><label for="thDia">Thread diameter</label>
-          <div class="unit" data-unit="mm"><input id="thDia" type="number" min="4" step="1" value="16"></div></div>
+          <div class="unit" data-unit="mm"><input id="thDia" data-stamp="thread_diameter" type="number" min="0" step="1"></div></div>
         <div class="field"><label for="thPitch">Pitch</label>
-          <div class="unit" data-unit="mm"><input id="thPitch" type="number" min="0.5" step="0.25" value="2"></div></div>
+          <div class="unit" data-unit="mm"><input id="thPitch" data-stamp="thread_pitch" type="number" min="0" step="0.25"></div></div>
         <div class="field"><label for="thLen">Thread length</label>
-          <div class="unit" data-unit="mm"><input id="thLen" type="number" min="1" step="0.5" value="8"></div></div>
+          <div class="unit" data-unit="mm"><input id="thLen" data-stamp="thread_length" type="number" min="0" step="0.5"></div></div>
         <div class="field"><label for="thClear">Clearance</label>
-          <div class="unit" data-unit="mm"><input id="thClear" type="number" min="0" step="0.05" value="0.3"></div></div>
+          <div class="unit" data-unit="mm"><input id="thClear" data-stamp="clearance" type="number" min="0" step="0.05"></div></div>
       </div>
       <p class="hint" style="word-break:normal">The handle is exported upright for printing: flat top on the bed, threaded post up. Raise the clearance if it is too tight to screw in.</p>
     </section>
@@ -343,12 +343,11 @@ const state = {
   visible: {},           // hex -> bool
   meshes: {},            // hex -> THREE.Group (mesh + edges), also "backplate", "box", "handle"
 };
-// Stamp inputs -> svg2stl.StampOptions fields.
-const STAMP_FIELDS = {
-  stMargin: "margin", stRadius: "corner_radius", stThick: "box_thickness", knobDia: "knob_diameter",
-  knobH: "knob_height", thDia: "thread_diameter", thPitch: "thread_pitch", thLen: "thread_length",
-  thClear: "clearance",
-};
+// Stamp inputs, tagged with their svg2stl.StampOptions field (data-stamp).
+// Their defaults come from Python once the converter is ready; an empty
+// input means "use the default".
+const stampInputs = [...document.querySelectorAll("[data-stamp]")];
+const stampValues = () => Object.fromEntries(stampInputs.map((el) => [el.dataset.stamp, el.value]));
 
 // ---------------------------------------------------------------- settings
 const STORE_KEY = "svg2stl:";
@@ -359,9 +358,8 @@ function saveSettings() {
       depths: state.depths, width: $("width").value, scale: $("scale").value,
       tolerance: $("tolerance").value, occlude: $("occlude").checked,
       bpOn: $("bpOn").checked, bpDepth: $("bpDepth").value, bpMargin: $("bpMargin").value,
-      mode: state.mode, stamp: Object.fromEntries(Object.keys(STAMP_FIELDS).map((id) => [id, $(id).value])),
+      stamp: stampValues(),
     }));
-    localStorage.setItem(STORE_KEY + "mode", state.mode);
   } catch {}
 }
 const fileKey = () => state.file ? `${state.file.name}:${state.file.size}` : "";
@@ -509,7 +507,8 @@ function applyPreview() {
     if (state.meshes.handle) state.meshes.handle.position.z = -2 * gap;
     const bottom = d.boxThickness + d.knobHeight;
     if (grid) grid.position.z = -bottom - 2 * gap - 0.01;
-    const [w, h] = d.size;
+    // Footprint includes the knob when it is wider than the box.
+    const [w, h] = d.size.map((v) => Math.max(v, d.knobDiameter));
     s.innerHTML = `<b>${fmt(w)}</b> × <b>${fmt(h)}</b> × <b>${fmt(maxColor + bottom)}</b> mm`
                 + ` · knob ⌀ <b>${fmt(d.knobDiameter)}</b> mm`;
     updateExportLabel();
@@ -635,7 +634,15 @@ const esc = (t) => String(t).replace(/[&<>"]/g, (ch) => ({ "&": "&amp;", "<": "&
 
 worker.onmessage = ({ data }) => {
   if (data.type === "progress") { if (!engineReady) busy(data.msg); return; }
-  if (data.type === "ready") { engineReady = true; if (!pending.size) idle(); return; }
+  if (data.type === "ready") {
+    engineReady = true;
+    for (const el of stampInputs) {
+      const v = data.stampDefaults[el.dataset.stamp];
+      if (el.value === "" && v) el.value = v;   // 0 (automatic knob) stays empty
+    }
+    if (!pending.size) idle();
+    return;
+  }
   if (data.type === "fatal") {
     idle();
     status(`The converter could not start (${data.msg}). Check your connection and reload the page.`, "err");
@@ -666,7 +673,7 @@ function geometryRequest() {
     occlude: $("occlude").checked,
     margin: +$("bpMargin").value || 0,
     mode: state.mode,
-    stamp: Object.fromEntries(Object.entries(STAMP_FIELDS).map(([id, key]) => [key, $(id).value])),
+    stamp: stampValues(),
   };
 }
 
@@ -721,8 +728,7 @@ async function openFile(file) {
     for (const k of ["width", "scale", "tolerance", "bpDepth", "bpMargin"]) if (s[k] != null) $(k).value = s[k];
     $("occlude").checked = s.occlude ?? true;
     $("bpOn").checked = !!s.bpOn;
-    for (const [id, v] of Object.entries(s.stamp || {})) if (id in STAMP_FIELDS && v != null) $(id).value = v;
-    if (s.mode) setMode(s.mode);
+    for (const el of stampInputs) { const v = s.stamp?.[el.dataset.stamp]; if (v != null) el.value = v; }
     state.depths = { ...s.depths };
   }
   $("dropText").innerHTML = `<b>${esc(file.name)}</b><br>choose another`;
@@ -747,8 +753,8 @@ window.addEventListener("drop", (e) => {
   openFile(e.dataTransfer.files[0]);
 });
 
-for (const id of ["width", "scale", "tolerance", "bpMargin", ...Object.keys(STAMP_FIELDS)])
-  $(id).addEventListener("input", reloadSoon);
+for (const el of [...["width", "scale", "tolerance", "bpMargin"].map($), ...stampInputs])
+  el.addEventListener("input", reloadSoon);
 $("occlude").addEventListener("change", reloadSoon);
 for (const id of ["bpOn", "bpDepth", "explode", "edges"])
   $(id).addEventListener("input", () => { applyPreview(); saveSettings(); });
@@ -791,15 +797,17 @@ function setMode(mode) {
     b.setAttribute("aria-selected", String(b.dataset.mode === state.mode)));
   document.querySelectorAll("[data-show]").forEach((el) => { el.hidden = el.dataset.show !== state.mode; });
   $("thumb").classList.toggle("mirrored", state.mode === "stamp");
+  try { localStorage.setItem(STORE_KEY + "mode", state.mode); } catch {}
 }
 document.querySelectorAll("[role=tab]").forEach((b) => b.addEventListener("click", () => {
   if (b.dataset.mode === state.mode) return;
   setMode(b.dataset.mode);
   $("files").innerHTML = "";
-  try { localStorage.setItem(STORE_KEY + "mode", state.mode); } catch {}
   if (state.file) load({ fitView: true });
 }));
-try { setMode(localStorage.getItem(STORE_KEY + "mode")); } catch { setMode("extrude"); }
+let savedMode = null;
+try { savedMode = localStorage.getItem(STORE_KEY + "mode"); } catch {}
+setMode(savedMode);
 
 // ---------------------------------------------------------------- start
 resize();

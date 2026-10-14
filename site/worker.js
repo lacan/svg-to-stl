@@ -1,6 +1,6 @@
 // Runs svg2stl (Python) in the browser with Pyodide, off the main thread.
 // Messages in:  {id, cmd: "load" | "export", svg?, name?, req}
-// Messages out: {type: "progress", msg} | {type: "ready"} | {id, result} | {id, error} | {id, skipped}
+// Messages out: {type: "progress", msg} | {type: "ready", stampDefaults} | {id, result} | {id, error} | {id, skipped}
 
 // Loaded as a module worker: new Worker("worker.js", { type: "module" }).
 import { loadPyodide } from "https://cdn.jsdelivr.net/pyodide/v314.0.7/full/pyodide.mjs";
@@ -24,7 +24,7 @@ async function init() {
   }
   py.runPython("import sys; sys.path.insert(0, '/app')");
   api = py.pyimport("web_api");
-  postMessage({ type: "ready" });
+  postMessage({ type: "ready", stampDefaults: JSON.parse(api.stamp_defaults()) });
 }
 const ready = init();
 ready.catch((e) => postMessage({ type: "fatal", msg: String(e.message || e) }));

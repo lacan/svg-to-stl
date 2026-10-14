@@ -23,7 +23,8 @@ def build():
     OUT.mkdir(exist_ok=True)
     for old in OUT.iterdir():
         shutil.rmtree(old) if old.is_dir() else old.unlink()
-    shutil.copytree(ROOT / "site", OUT, dirs_exist_ok=True)
+    shutil.copytree(ROOT / "site", OUT, dirs_exist_ok=True,
+                    ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
     shutil.copy2(ROOT / "svg2stl.py", OUT / "svg2stl.py")
     (OUT / ".nojekyll").touch()  # serve files as-is on GitHub Pages
     print(f"built {OUT}")
